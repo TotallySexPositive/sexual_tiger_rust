@@ -2,12 +2,12 @@ use std::env;
 
 use serenity::async_trait;
 use serenity::framework::standard::macros::{command, group};
-use serenity::framework::standard::{CommandResult, StandardFramework};
+use serenity::framework::standard::{Args, CommandResult, StandardFramework};
 use serenity::model::channel::Message;
 use serenity::prelude::*;
 
 #[group]
-#[commands(ping)]
+#[commands(ping, gif)]
 struct General;
 
 struct Handler;
@@ -46,5 +46,21 @@ async fn main() {
 #[command]
 async fn ping(ctx: &Context, msg: &Message) -> CommandResult {
     msg.reply(ctx, "Pong!").await?;
+    Ok(())
+}
+
+#[command]
+async fn gif(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
+    let api_key = env::var("GIPHY_TOKEN").expect("Expected GIPHY_TOKEN in env");
+    let query = args.rest();
+    let res = reqwest::get(&format!(
+        "https://api.giphy.com/v1/gifs/random?api_key={}&tag={}&rating=r",
+        api_key, query
+    ))
+    .await?;
+    let body = res.text().await?;
+    let json: serde_json::Value = serde_json::from_str(&body)?;
+    let embed_url = json["data"]["embed_url"].as_str().unwrap();
+    msg.reply(ctx, embed_url).await?;
     Ok(())
 }
