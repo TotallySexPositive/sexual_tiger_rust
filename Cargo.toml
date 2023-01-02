@@ -6,7 +6,10 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+rand = "0.8.5"
 reqwest = "0.11.13"
+rng = "0.1.0"
+serde = "1.0.152"
 serde_json = "1.0.91"
-serenity = "0.11.5"
+serenity = { version = "0.11.5", features = ["model", "collector"] }
 tokio = { version = "1.23.0", features = ["rt-multi-thread"] }

@@ -5,6 +5,7 @@ use std::env;
 
 use crate::commands::gif::*;
 use crate::commands::ping::*;
+use crate::commands::xkcd::*;
 use myauth::AuthData;
 
 use serenity::async_trait;
@@ -13,7 +14,7 @@ use serenity::framework::standard::StandardFramework;
 use serenity::prelude::*;
 
 #[group]
-#[commands(ping, gif)]
+#[commands(ping, gif, xkcd)]
 
 struct General;
 
