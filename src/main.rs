@@ -5,6 +5,7 @@ use std::env;
 
 use crate::commands::gif::*;
 use crate::commands::ping::*;
+use crate::commands::play::*;
 use crate::commands::xkcd::*;
 use myauth::AuthData;
 
@@ -13,8 +14,10 @@ use serenity::framework::standard::macros::group;
 use serenity::framework::standard::StandardFramework;
 use serenity::prelude::*;
 
+use songbird::SerenityInit;
+
 #[group]
-#[commands(ping, gif, xkcd)]
+#[commands(ping, gif, xkcd, play, join, leave, mute, unmute, undeafen)]
 
 struct General;
 
@@ -42,6 +45,7 @@ async fn main() {
     let mut client = Client::builder(&auth.discord, intents)
         .event_handler(Handler)
         .framework(framework)
+        .register_songbird()
         .await
         .expect("Err creating client");
     let data = client.data.write();
