@@ -1,0 +1,2 @@
+DROP TABLE song;
+DROP INDEX IF EXISTS song_name;

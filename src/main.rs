@@ -1,5 +1,6 @@
 mod commands;
 mod myauth;
+mod schema;
 
 use std::env;
 
