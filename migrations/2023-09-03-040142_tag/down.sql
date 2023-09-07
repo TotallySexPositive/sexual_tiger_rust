@@ -1,0 +1,3 @@
+DROP TABLE image_tag;
+DROP TABLE tag;
+DROP INDEX IF EXISTS tag_id;
