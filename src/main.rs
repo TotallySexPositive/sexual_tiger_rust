@@ -51,7 +51,9 @@ use songbird::SerenityInit;
     download,
     fuckoff,
     playlist,
-    playplaylist
+    playplaylist,
+    shuffleplaylist,
+    shuffle
 )]
 struct General;
 
@@ -95,6 +97,24 @@ async fn main() {
     });
 
     let pool = establish_connection_pool().await;
+
+    // Start background Web API server for DataTables / data.json / /api/songs
+    let api_pool = pool.clone();
+    let api_port = std::env::var("API_PORT")
+        .ok()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(8080);
+    let api_host = std::env::var("API_HOST").unwrap_or_else(|_| "0.0.0.0".to_string());
+
+    if let Err(e) = sexual_tiger::export_data_json(&pool).await {
+        eprintln!("Initial data.json export notice: {}", e);
+    }
+
+    tokio::spawn(async move {
+        if let Err(e) = sexual_tiger::start_api_server(api_pool, &api_host, api_port).await {
+            eprintln!("API server error: {}", e);
+        }
+    });
 
     // Set gateway intents, which decides what events the bot will be notified about
     let intents = GatewayIntents::non_privileged() | GatewayIntents::MESSAGE_CONTENT;

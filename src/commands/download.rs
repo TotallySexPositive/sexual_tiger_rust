@@ -58,6 +58,10 @@ pub async fn download(ctx: &Context, msg: &Message, mut args: Args) -> CommandRe
 
     match insert_song(&pool, &new_s).await {
         Ok(s) => {
+            let pool_export = pool.clone();
+            tokio::spawn(async move {
+                let _ = sexual_tiger::export_data_json(&pool_export).await;
+            });
             check_msg(
                 msg.channel_id
                     .say(&ctx.http, format!("Successfully added song: {}", s.name))

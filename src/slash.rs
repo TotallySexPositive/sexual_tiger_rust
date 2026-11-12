@@ -227,10 +227,36 @@ pub fn create_slash_commands() -> Vec<CreateCommand> {
                     CreateCommandOption::new(
                         CommandOptionType::String,
                         "name",
-                        "Name of the playlist to play",
+                        "Name or ID # of the playlist to play",
                     )
                     .required(true),
                 ),
+            )
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::SubCommand,
+                    "shuffle",
+                    "Shuffle and play an entire playlist",
+                )
+                .add_sub_option(
+                    CreateCommandOption::new(
+                        CommandOptionType::String,
+                        "name",
+                        "Name or ID # of the playlist to shuffle and play",
+                    )
+                    .required(true),
+                ),
+            ),
+        // /shuffle
+        CreateCommand::new("shuffle")
+            .description("Shuffle the current queue, or shuffle and play a playlist")
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::String,
+                    "playlist",
+                    "Playlist name or database ID # to shuffle and play",
+                )
+                .required(false),
             ),
         // /join
         CreateCommand::new("join").description("Join your active voice channel"),
@@ -354,6 +380,10 @@ pub async fn handle_slash_command(ctx: &Context, command: &CommandInteraction) {
         }
         "queue" => {
             handle_queue(ctx, command, guild_id).await;
+        }
+        "shuffle" => {
+            let playlist_opt = get_opt_str(&command.data.options, "playlist");
+            handle_slash_shuffle(ctx, command, guild_id, &pool, playlist_opt).await;
         }
         "songs" => {
             let query = get_opt_str(&command.data.options, "query");
@@ -787,15 +817,19 @@ async fn edit_or_followup_chunked(
     command: &CommandInteraction,
     text: &str,
 ) {
-    use serenity::builder::CreateInteractionResponseFollowup;
+    use serenity::builder::{CreateAllowedMentions, CreateInteractionResponseFollowup};
     let chunks = sexual_tiger::chunk_text(text, 1900);
     if let Some(first) = chunks.first() {
-        let edit = EditInteractionResponse::new().content(first);
+        let edit = EditInteractionResponse::new()
+            .content(first)
+            .allowed_mentions(CreateAllowedMentions::new().empty_users().empty_roles());
         let _ = command.edit_response(&ctx.http, edit).await;
     }
     for subsequent in chunks.iter().skip(1) {
         if !subsequent.trim().is_empty() {
-            let followup = CreateInteractionResponseFollowup::new().content(subsequent);
+            let followup = CreateInteractionResponseFollowup::new()
+                .content(subsequent)
+                .allowed_mentions(CreateAllowedMentions::new().empty_users().empty_roles());
             let _ = command.create_followup(&ctx.http, followup).await;
         }
     }
@@ -872,6 +906,10 @@ async fn handle_download(
 
     match insert_song(pool, &new_s).await {
         Ok(s) => {
+            let pool_export = pool.clone();
+            tokio::spawn(async move {
+                let _ = sexual_tiger::export_data_json(&pool_export).await;
+            });
             let edit = EditInteractionResponse::new().content(format!("Successfully added song: **{}** 🎉", s.name));
             let _ = command.edit_response(&ctx.http, edit).await;
         }
@@ -916,12 +954,32 @@ async fn handle_playlist(
                 let _ = command.edit_response(&ctx.http, edit).await;
             }
             Ok(pls) => {
-                let list: Vec<String> = pls
-                    .iter()
-                    .map(|p| format!("• **{}** ({} songs) — by {}", p.name, p.num_songs, p.created_by))
-                    .collect();
-                let text = format!("📑 **Playlists:**\n{}", list.join("\n"));
-                edit_or_followup_chunked(ctx, command, &text).await;
+                let mut cache: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                let mut pairs = Vec::new();
+                for p in pls {
+                    let creator = if let Some(cached) = cache.get(&p.created_by) {
+                        cached.clone()
+                    } else {
+                        let resolved = crate::commands::resolve_creator_name(&ctx.http, &p.created_by).await;
+                        cache.insert(p.created_by.clone(), resolved.clone());
+                        resolved
+                    };
+                    pairs.push((p, creator));
+                }
+                let pages = sexual_tiger::format_playlists_pages(&pairs);
+                if let Some(first) = pages.first() {
+                    let edit = EditInteractionResponse::new()
+                        .content(first)
+                        .allowed_mentions(serenity::builder::CreateAllowedMentions::new().empty_users().empty_roles());
+                    let _ = command.edit_response(&ctx.http, edit).await;
+                }
+                for page in pages.iter().skip(1) {
+                    use serenity::builder::CreateInteractionResponseFollowup;
+                    let followup = CreateInteractionResponseFollowup::new()
+                        .content(page)
+                        .allowed_mentions(serenity::builder::CreateAllowedMentions::new().empty_users().empty_roles());
+                    let _ = command.create_followup(&ctx.http, followup).await;
+                }
             }
             Err(e) => {
                 let edit = EditInteractionResponse::new().content(format!("Database error: {}", e));
@@ -950,7 +1008,8 @@ async fn handle_playlist(
                                 )
                             })
                             .collect();
-                        let text = format!("📑 **{}** ({} songs):\n{}", pl.name, songs.len(), list.join("\n"));
+                        let creator = crate::commands::resolve_creator_name(&ctx.http, &pl.created_by).await;
+                        let text = format!("📑 **{}** ({} songs, created by {}):\n{}", pl.name, songs.len(), creator, list.join("\n"));
                         edit_or_followup_chunked(ctx, command, &text).await;
                     }
                 }
@@ -1089,76 +1148,137 @@ async fn handle_playlist(
         }
         "play" => {
             let pl_name = get_opt_str(sub_opts, "name").unwrap_or_default();
-
-            if let Err(e) = ensure_voice_connection(ctx, command, guild_id).await {
-                let edit = EditInteractionResponse::new().content(e);
-                let _ = command.edit_response(&ctx.http, edit).await;
-                return;
-            }
-
-            let pl = match get_playlist_by_name(pool, pl_name).await {
-                Ok(Some(p)) => p,
-                Ok(None) => {
-                    let edit = EditInteractionResponse::new().content(format!("Playlist \"{}\" not found.", pl_name));
-                    let _ = command.edit_response(&ctx.http, edit).await;
-                    return;
-                }
-                Err(e) => {
-                    let edit = EditInteractionResponse::new().content(format!("Database error: {}", e));
-                    let _ = command.edit_response(&ctx.http, edit).await;
-                    return;
-                }
-            };
-
-            let songs = match get_playlist_songs(pool, pl.playlist_id.unwrap()).await {
-                Ok(s) => s,
-                Err(e) => {
-                    let edit = EditInteractionResponse::new().content(format!("Failed to get playlist songs: {}", e));
-                    let _ = command.edit_response(&ctx.http, edit).await;
-                    return;
-                }
-            };
-
-            if songs.is_empty() {
-                let edit = EditInteractionResponse::new().content(format!("Playlist **{}** is empty.", pl.name));
-                let _ = command.edit_response(&ctx.http, edit).await;
-                return;
-            }
-
-            let manager = songbird::get(ctx).await.unwrap().clone();
-            let handler_lock = manager.get(guild_id).unwrap();
-
-            let mut count = 0;
-            {
-                let mut handler = handler_lock.lock().await;
-                for s in &songs {
-                    let path = resolve_song_path(&s.source);
-                    let input: songbird::input::Input = songbird::input::File::new(path).into();
-                    let track = handler.enqueue_input(input).await;
-                    let _ = track.add_event(Event::Track(TrackEvent::Error), SlashTrackErrorNotifier);
-                    if s.is_clip.unwrap_or(0) == 1 {
-                        let _ = track.set_volume(5.0);
-                    } else {
-                        let _ = track.set_volume(1.5);
-                    }
-                    if let Some(sid) = s.song_id {
-                        let plays = s.num_plays.unwrap_or(0);
-                        let _ = record_song_play(pool, sid, plays).await;
-                    }
-                    count += 1;
-                }
-            }
-
-            let edit = EditInteractionResponse::new().content(format!(
-                "Queued **{}** songs from playlist **{}**! 🎶",
-                count, pl.name
-            ));
-            let _ = command.edit_response(&ctx.http, edit).await;
+            play_playlist_slash(ctx, command, guild_id, pool, pl_name, false).await;
+        }
+        "shuffle" => {
+            let pl_name = get_opt_str(sub_opts, "name").unwrap_or_default();
+            play_playlist_slash(ctx, command, guild_id, pool, pl_name, true).await;
         }
         _ => {
             let edit = EditInteractionResponse::new().content("Unknown playlist subcommand.");
             let _ = command.edit_response(&ctx.http, edit).await;
         }
+    }
+}
+
+async fn play_playlist_slash(
+    ctx: &Context,
+    command: &CommandInteraction,
+    guild_id: GuildId,
+    pool: &sqlx::SqlitePool,
+    pl_name: &str,
+    shuffle: bool,
+) {
+    if let Err(e) = ensure_voice_connection(ctx, command, guild_id).await {
+        let edit = EditInteractionResponse::new().content(e);
+        let _ = command.edit_response(&ctx.http, edit).await;
+        return;
+    }
+
+    let pl = match get_playlist_by_name(pool, pl_name).await {
+        Ok(Some(p)) => p,
+        Ok(None) => {
+            let edit = EditInteractionResponse::new().content(format!("Playlist \"{}\" not found.", pl_name));
+            let _ = command.edit_response(&ctx.http, edit).await;
+            return;
+        }
+        Err(e) => {
+            let edit = EditInteractionResponse::new().content(format!("Database error: {}", e));
+            let _ = command.edit_response(&ctx.http, edit).await;
+            return;
+        }
+    };
+
+    let mut songs = match get_playlist_songs(pool, pl.playlist_id.unwrap()).await {
+        Ok(s) => s,
+        Err(e) => {
+            let edit = EditInteractionResponse::new().content(format!("Failed to get playlist songs: {}", e));
+            let _ = command.edit_response(&ctx.http, edit).await;
+            return;
+        }
+    };
+
+    if songs.is_empty() {
+        let edit = EditInteractionResponse::new().content(format!("Playlist **{}** is empty.", pl.name));
+        let _ = command.edit_response(&ctx.http, edit).await;
+        return;
+    }
+
+    if shuffle {
+        use rand::seq::SliceRandom;
+        let mut rng = rand::thread_rng();
+        songs.shuffle(&mut rng);
+    }
+
+    let manager = songbird::get(ctx).await.unwrap().clone();
+    let handler_lock = manager.get(guild_id).unwrap();
+
+    let mut count = 0;
+    {
+        let mut handler = handler_lock.lock().await;
+        for s in &songs {
+            let path = resolve_song_path(&s.source);
+            let input: songbird::input::Input = songbird::input::File::new(path).into();
+            let track = handler.enqueue_input(input).await;
+            let _ = track.add_event(Event::Track(TrackEvent::Error), SlashTrackErrorNotifier);
+            if s.is_clip.unwrap_or(0) == 1 {
+                let _ = track.set_volume(5.0);
+            } else {
+                let _ = track.set_volume(1.5);
+            }
+            if let Some(sid) = s.song_id {
+                let plays = s.num_plays.unwrap_or(0);
+                let _ = record_song_play(pool, sid, plays).await;
+            }
+            count += 1;
+        }
+    }
+
+    let shuffle_tag = if shuffle { " (shuffled 🔀)" } else { "" };
+    let edit = EditInteractionResponse::new().content(format!(
+        "Queued **{}** songs from playlist **{}**{}! 🎶",
+        count, pl.name, shuffle_tag
+    ));
+    let _ = command.edit_response(&ctx.http, edit).await;
+}
+
+async fn handle_slash_shuffle(
+    ctx: &Context,
+    command: &CommandInteraction,
+    guild_id: GuildId,
+    pool: &sqlx::SqlitePool,
+    playlist_opt: Option<&str>,
+) {
+    if let Some(pl_name) = playlist_opt {
+        play_playlist_slash(ctx, command, guild_id, pool, pl_name, true).await;
+        return;
+    }
+
+    let manager = songbird::get(ctx).await.unwrap().clone();
+    if let Some(handler_lock) = manager.get(guild_id) {
+        let handler = handler_lock.lock().await;
+        let queue = handler.queue();
+        let q_len = queue.len();
+        if q_len <= 1 {
+            let edit = EditInteractionResponse::new().content("Not enough songs in the queue to shuffle.");
+            let _ = command.edit_response(&ctx.http, edit).await;
+            return;
+        }
+
+        queue.modify_queue(|q| {
+            use rand::seq::SliceRandom;
+            let mut rng = rand::thread_rng();
+            let slice = q.make_contiguous();
+            if slice.len() > 1 {
+                slice[1..].shuffle(&mut rng);
+            }
+        });
+
+        let edit = EditInteractionResponse::new().content(format!("Shuffled **{}** upcoming songs in the queue! 🔀", q_len - 1));
+        let _ = command.edit_response(&ctx.http, edit).await;
+    } else {
+        let edit = EditInteractionResponse::new().content("Not in a voice channel. Use `/playlist shuffle` or `/play`.");
+        let _ = command.edit_response(&ctx.http, edit).await;
     }
 }
 
@@ -1296,7 +1416,7 @@ mod tests {
     #[test]
     fn test_create_slash_commands() {
         let commands = create_slash_commands();
-        assert_eq!(commands.len(), 23);
+        assert_eq!(commands.len(), 24);
 
         // Check specific command names exist
         let names: Vec<String> = commands
@@ -1312,6 +1432,7 @@ mod tests {
         assert!(names.contains(&"vup".to_string()));
         assert!(names.contains(&"vdown".to_string()));
         assert!(names.contains(&"playlist".to_string()));
+        assert!(names.contains(&"shuffle".to_string()));
         assert!(names.contains(&"download".to_string()));
         assert!(names.contains(&"help".to_string()));
         assert!(names.contains(&"skip".to_string()));

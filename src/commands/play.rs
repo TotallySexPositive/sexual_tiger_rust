@@ -50,10 +50,13 @@ pub async fn play(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
         }
     };
 
-    let manager = songbird::get(ctx)
-        .await
-        .expect("Songbird Voice client placed in at initialisation.")
-        .clone();
+    let handler_lock = match crate::commands::ensure_voice_channel(ctx, guild_id, msg.author.id).await {
+        Ok(h) => h,
+        Err(e) => {
+            check_msg(msg.channel_id.say(&ctx.http, e).await);
+            return Ok(());
+        }
+    };
 
     // If it's not a URL, look it up in the database
     if !in_query.starts_with("http://") && !in_query.starts_with("https://") {
@@ -91,7 +94,7 @@ pub async fn play(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
             }
         };
 
-        println!("Playing local song: {:?}", &the_song);
+        println!("Playing local song: {:?}", the_song);
 
         let resolved_source = sexual_tiger::resolve_song_path(&the_song.source);
         if !std::path::Path::new(&resolved_source).exists() {
@@ -108,7 +111,7 @@ pub async fn play(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
         let input: songbird::input::Input =
             songbird::input::File::new(resolved_source).into();
 
-        if let Some(handler_lock) = manager.get(guild_id) {
+        {
             let mut handler = handler_lock.lock().await;
 
             let track = handler.enqueue_input(input).await;
@@ -129,24 +132,17 @@ pub async fn play(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
                     msg.channel_id
                         .say(
                             &ctx.http,
-                            format!("Queued **{}**{} (position: {})", &the_song.name, id_info, q_len),
+                            format!("Queued **{}**{} (position: {})", the_song.name, id_info, q_len),
                         )
                         .await,
                 );
             } else {
                 check_msg(
                     msg.channel_id
-                        .say(&ctx.http, format!("Playing **{}**{}", &the_song.name, id_info))
+                        .say(&ctx.http, format!("Playing **{}**{}", the_song.name, id_info))
                         .await,
                 );
             }
-        } else {
-            check_msg(
-                msg.channel_id
-                    .say(&ctx.http, "Not in a voice channel. Use `~join` first.")
-                    .await,
-            );
-            return Ok(());
         }
 
         if let Some(sid) = the_song.song_id {
@@ -159,7 +155,7 @@ pub async fn play(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
     }
 
     // It's a web URL
-    if let Some(handler_lock) = manager.get(guild_id) {
+    {
         let mut handler = handler_lock.lock().await;
 
         let clean_url = sexual_tiger::clean_youtube_url(&in_query);
@@ -178,12 +174,6 @@ pub async fn play(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
         } else {
             check_msg(msg.channel_id.say(&ctx.http, "Playing stream").await);
         }
-    } else {
-        check_msg(
-            msg.channel_id
-                .say(&ctx.http, "Not in a voice channel. Use `~join` first.")
-                .await,
-        );
     }
     Ok(())
 }

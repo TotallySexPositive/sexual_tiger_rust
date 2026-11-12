@@ -59,14 +59,22 @@ pub async fn playlist(ctx: &Context, msg: &Message, mut args: Args) -> CommandRe
                                 .await,
                         );
                     } else {
-                        let mut response = String::from("**Playlists:**\n");
+                        let mut cache: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                        let mut pairs = Vec::new();
                         for p in playlists {
-                            response.push_str(&format!(
-                                "• **{}** ({} songs) — created by {}\n",
-                                p.name, p.num_songs, p.created_by
-                            ));
+                            let creator = if let Some(cached) = cache.get(&p.created_by) {
+                                cached.clone()
+                            } else {
+                                let resolved = crate::commands::resolve_creator_name(&ctx.http, &p.created_by).await;
+                                cache.insert(p.created_by.clone(), resolved.clone());
+                                resolved
+                            };
+                            pairs.push((p, creator));
                         }
-                        crate::commands::send_chunked(ctx, msg.channel_id, &response).await;
+                        let pages = sexual_tiger::format_playlists_pages(&pairs);
+                        for page in pages {
+                            crate::commands::send_chunked(ctx, msg.channel_id, &page).await;
+                        }
                     }
                 }
                 Err(e) => {
@@ -199,9 +207,10 @@ pub async fn playlist(ctx: &Context, msg: &Message, mut args: Args) -> CommandRe
                                 .await,
                         );
                     } else {
+                        let creator = crate::commands::resolve_creator_name(&ctx.http, &pl.created_by).await;
                         let mut response = format!(
                             "**Playlist: {}** ({} songs, created by {}):\n",
-                            pl.name, pl.num_songs, pl.created_by
+                            pl.name, pl.num_songs, creator
                         );
                         for (i, s) in songs.iter().enumerate() {
                             let duration_str = match s.duration {
@@ -421,14 +430,29 @@ pub async fn playlist(ctx: &Context, msg: &Message, mut args: Args) -> CommandRe
                 _ => {
                     check_msg(
                         msg.channel_id
-                            .say(&ctx.http, "Usage: `~playlist play <playlist name>`")
+                            .say(&ctx.http, "Usage: `~playlist play <playlist name | ID>`")
                             .await,
                     );
                     return Ok(());
                 }
             };
 
-            play_playlist_internal(ctx, msg, name, &pool).await;
+            play_playlist_internal(ctx, msg, name, &pool, false).await;
+        }
+        "shuffle" | "shuf" | "random" => {
+            let name = match args.remains() {
+                Some(n) if !n.trim().is_empty() => n.trim(),
+                _ => {
+                    check_msg(
+                        msg.channel_id
+                            .say(&ctx.http, "Usage: `~playlist shuffle <playlist name | ID>`")
+                            .await,
+                    );
+                    return Ok(());
+                }
+            };
+
+            play_playlist_internal(ctx, msg, name, &pool, true).await;
         }
         _ => {
             send_help(ctx, msg).await;
@@ -446,7 +470,7 @@ pub async fn playplaylist(ctx: &Context, msg: &Message, args: Args) -> CommandRe
         _ => {
             check_msg(
                 msg.channel_id
-                    .say(&ctx.http, "Usage: `~playplaylist <playlist name>`")
+                    .say(&ctx.http, "Usage: `~playplaylist <playlist name | ID>`")
                     .await,
             );
             return Ok(());
@@ -460,7 +484,101 @@ pub async fn playplaylist(ctx: &Context, msg: &Message, args: Args) -> CommandRe
             .expect("Expected DatabasePool in TypeMap")
     };
 
-    play_playlist_internal(ctx, msg, name, &pool).await;
+    play_playlist_internal(ctx, msg, name, &pool, false).await;
+    Ok(())
+}
+
+#[command]
+#[aliases("spl", "playlistshuffle")]
+pub async fn shuffleplaylist(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
+    let name = match args.remains() {
+        Some(n) if !n.trim().is_empty() => n.trim(),
+        _ => {
+            check_msg(
+                msg.channel_id
+                    .say(&ctx.http, "Usage: `~shuffleplaylist <playlist name | ID>`")
+                    .await,
+            );
+            return Ok(());
+        }
+    };
+
+    let pool = {
+        let data = ctx.data.read().await;
+        data.get::<DatabasePool>()
+            .cloned()
+            .expect("Expected DatabasePool in TypeMap")
+    };
+
+    play_playlist_internal(ctx, msg, name, &pool, true).await;
+    Ok(())
+}
+
+#[command]
+#[aliases("shuf")]
+pub async fn shuffle(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
+    let pool = {
+        let data = ctx.data.read().await;
+        data.get::<DatabasePool>()
+            .cloned()
+            .expect("Expected DatabasePool in TypeMap")
+    };
+
+    if let Some(name) = args.remains().map(|n| n.trim()).filter(|n| !n.is_empty()) {
+        play_playlist_internal(ctx, msg, name, &pool, true).await;
+        return Ok(());
+    }
+
+    // No playlist argument provided: shuffle the existing voice queue
+    let guild_id = match msg.guild_id {
+        Some(id) => id,
+        None => {
+            check_msg(msg.reply(&ctx.http, "Must be in a server").await);
+            return Ok(());
+        }
+    };
+
+    let manager = songbird::get(ctx)
+        .await
+        .expect("Songbird Voice client placed in at initialisation.")
+        .clone();
+
+    if let Some(handler_lock) = manager.get(guild_id) {
+        let handler = handler_lock.lock().await;
+        let queue = handler.queue();
+        let q_len = queue.len();
+        if q_len <= 1 {
+            check_msg(
+                msg.channel_id
+                    .say(&ctx.http, "Not enough songs in the queue to shuffle.")
+                    .await,
+            );
+            return Ok(());
+        }
+
+        queue.modify_queue(|q| {
+            use rand::seq::SliceRandom;
+            let mut rng = rand::thread_rng();
+            let slice = q.make_contiguous();
+            if slice.len() > 1 {
+                // Keep the active song playing at index 0, shuffle upcoming tracks
+                slice[1..].shuffle(&mut rng);
+            }
+        });
+
+        check_msg(
+            msg.channel_id
+                .say(&ctx.http, format!("Shuffled **{}** upcoming songs in the queue! 🔀", q_len - 1))
+                .await,
+        );
+    } else {
+        check_msg(
+            msg.channel_id
+                .say(&ctx.http, "Not in a voice channel. Use `~playlist shuffle <name | ID>` or `~play <song>`.")
+                .await,
+        );
+    }
+
     Ok(())
 }
 
@@ -469,6 +587,7 @@ async fn play_playlist_internal(
     msg: &Message,
     name: &str,
     pool: &sqlx::SqlitePool,
+    shuffle: bool,
 ) {
     let guild_id = match msg.guild_id {
         Some(id) => id,
@@ -499,7 +618,7 @@ async fn play_playlist_internal(
     };
 
     let pl_id = pl.playlist_id.unwrap();
-    let songs = match get_playlist_songs(pool, pl_id).await {
+    let mut songs = match get_playlist_songs(pool, pl_id).await {
         Ok(s) => s,
         Err(e) => {
             check_msg(
@@ -520,19 +639,16 @@ async fn play_playlist_internal(
         return;
     }
 
-    let manager = songbird::get(ctx)
-        .await
-        .expect("Songbird Voice client placed in at initialisation.")
-        .clone();
+    if shuffle {
+        use rand::seq::SliceRandom;
+        let mut rng = rand::thread_rng();
+        songs.shuffle(&mut rng);
+    }
 
-    let handler_lock = match manager.get(guild_id) {
-        Some(h) => h,
-        None => {
-            check_msg(
-                msg.channel_id
-                    .say(&ctx.http, "Not in a voice channel. Use `~join` first.")
-                    .await,
-            );
+    let handler_lock = match crate::commands::ensure_voice_channel(ctx, guild_id, msg.author.id).await {
+        Ok(h) => h,
+        Err(e) => {
+            check_msg(msg.channel_id.say(&ctx.http, e).await);
             return;
         }
     };
@@ -558,11 +674,12 @@ async fn play_playlist_internal(
         }
     }
 
+    let shuffle_tag = if shuffle { " (shuffled 🔀)" } else { "" };
     check_msg(
         msg.channel_id
             .say(
                 &ctx.http,
-                format!("Queued **{}** songs from playlist **{}**!", count, pl.name),
+                format!("Queued **{}** songs from playlist **{}**{}!", count, pl.name, shuffle_tag),
             )
             .await,
     );
@@ -570,13 +687,14 @@ async fn play_playlist_internal(
 
 async fn send_help(ctx: &Context, msg: &Message) {
     let help_text = "**Playlist Commands:**\n\
-        • `~playlist list` — View all playlists\n\
-        • `~playlist show <name>` — View songs in a playlist\n\
+        • `~playlist list` — View all playlists in a table with IDs\n\
+        • `~playlist show <name | ID#>` — View songs in a playlist\n\
         • `~playlist create <name>` — Create a new playlist\n\
-        • `~playlist delete <name>` — Delete a playlist\n\
+        • `~playlist delete <name | ID#>` — Delete a playlist\n\
         • `~playlist add \"<playlist>\" <song>` — Add a song to a playlist\n\
         • `~playlist remove \"<playlist>\" <song>` — Remove a song from a playlist\n\
-        • `~playlist play <name>` (or `~playplaylist <name>`) — Queue and play all songs in a playlist\n";
+        • `~playlist play <name | ID#>` (or `~playplaylist <name | ID#>`) — Queue all songs in order\n\
+        • `~playlist shuffle <name | ID#>` (or `~shuffleplaylist <name | ID#>`) — Queue all songs shuffled 🔀\n";
     check_msg(msg.channel_id.say(&ctx.http, help_text).await);
 }
 

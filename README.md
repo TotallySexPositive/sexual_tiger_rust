@@ -86,6 +86,7 @@ Sexual Tiger supports **both** classic prefix commands (`~`) and modern native D
 | `~pause` | `/pause` | — | Pauses playback of the active track | `~pause`<br>`/pause` |
 | `~resume` | `/resume` | — | Resumes playback of a paused track | `~resume`<br>`/resume` |
 | `~queue` | `/queue` | — | Displays the total number of songs queued | `~queue`<br>`/queue` |
+| `~shuffle` | `/shuffle` | `[playlist: <name \| ID#>]` | Shuffles upcoming tracks in voice queue, or shuffles and plays a playlist (autojoins voice) | `~shuffle`<br>`~shuffle 1`<br>`/shuffle`<br>`/shuffle playlist:Gym Mix` |
 | `~songs` | `/songs` | `[query: <term \| ID#>]` | Displays top 100 played songs sorted by plays (or search results) in a formatted table with database IDs | `~songs`<br>`~songs 1`<br>`/songs query:alarm` |
 
 ---
@@ -111,14 +112,16 @@ Adjusts playback volume in real-time for the active stream and applies across al
 
 | Prefix Command | Slash Command | Arguments | Description | Example |
 |---|---|---|---|---|
-| `~playlist list` | `/playlist list` | — | View all saved playlists and total song counts | `~playlist list`<br>`/playlist list` |
-| `~playlist show <name>` | `/playlist show` | `name: <name>` | View songs in a specific playlist | `~playlist show Party`<br>`/playlist show name:Party` |
+| `~playlist list` | `/playlist list` | — | View all saved playlists in a formatted table with playlist IDs and creators | `~playlist list`<br>`/playlist list` |
+| `~playlist show <name \| ID#>` | `/playlist show` | `name: <name \| ID#>` | View songs in a specific playlist (by name or ID #) | `~playlist show 1`<br>`/playlist show name:Party` |
 | `~playlist create <name>` | `/playlist create` | `name: <name>` | Create a new empty playlist | `~playlist create Gym Mix`<br>`/playlist create name:Gym Mix` |
-| `~playlist delete <name>` | `/playlist delete` | `name: <name>` | Permanently delete a playlist | `~playlist delete Gym Mix`<br>`/playlist delete name:Gym Mix` |
-| `~playlist add "<pl>" <song>` | `/playlist add` | `playlist: <pl> song: <name \| ID#>` | Add song from library (by name or ID #) to playlist | `~playlist add "Gym Mix" 1`<br>`/playlist add playlist:Gym Mix song:alarm` |
-| `~playlist remove "<pl>" <song>` | `/playlist remove` | `playlist: <pl> song: <name \| ID#>` | Remove song from playlist (by name or ID #) | `~playlist remove "Gym Mix" 1`<br>`/playlist remove playlist:Gym Mix song:alarm` |
-| `~playlist play <name>` | `/playlist play` | `name: <name>` | Queue and play all songs in a playlist | `~playlist play Gym Mix`<br>`/playlist play name:Gym Mix` |
-| `~playplaylist <name>` | — | `<name>` | Shortcut prefix command to play an entire playlist | `~playplaylist Gym Mix` |
+| `~playlist delete <name \| ID#>` | `/playlist delete` | `name: <name \| ID#>` | Permanently delete a playlist (by name or ID #) | `~playlist delete 1`<br>`/playlist delete name:Gym Mix` |
+| `~playlist add "<pl \| ID#>" <song>` | `/playlist add` | `playlist: <pl \| ID#> song: <name \| ID#>` | Add song from library (by name or ID #) to playlist | `~playlist add 1 1`<br>`/playlist add playlist:Gym Mix song:alarm` |
+| `~playlist remove "<pl \| ID#>" <song>` | `/playlist remove` | `playlist: <pl \| ID#> song: <name \| ID#>` | Remove song from playlist (by name or ID #) | `~playlist remove 1 1`<br>`/playlist remove playlist:Gym Mix song:alarm` |
+| `~playlist play <name \| ID#>` | `/playlist play` | `name: <name \| ID#>` | Queue and play all songs in a playlist (automatically joins voice) | `~playlist play 1`<br>`/playlist play name:Gym Mix` |
+| `~playplaylist <name \| ID#>` | — | `<name \| ID#>` | Shortcut prefix command to play an entire playlist (automatically joins voice) | `~playplaylist 1` |
+| `~playlist shuffle <name \| ID#>` | `/playlist shuffle` | `name: <name \| ID#>` | Shuffle and play all songs in a playlist (automatically joins voice) | `~playlist shuffle 1`<br>`/playlist shuffle name:Gym Mix` |
+| `~shuffleplaylist <name \| ID#>` | — | `<name \| ID#>` | Shortcut prefix command to shuffle and play a playlist (automatically joins voice) | `~shuffleplaylist 1` |
 
 ---
 
@@ -142,6 +145,55 @@ Adjusts playback volume in real-time for the active stream and applies across al
 | `~gif` | `/gif` | `query: <terms>` | Posts a random GIF from Giphy matching tags | `~gif tiger`<br>`/gif query:tiger` |
 | `~xkcd` | `/xkcd` | — | Displays a random XKCD comic | `~xkcd`<br>`/xkcd` |
 | `~ping` | `/ping` | — | Tests bot responsiveness and latency | `~ping`<br>`/ping` |
+
+---
+
+## 🌐 Web API & DataTables Integration (`tiger.wentzel.dev`)
+
+The bot includes a built-in asynchronous HTTP API server configured via `API_PORT=8080` (default port mapped in `docker-compose.yml`) and `API_HOST=0.0.0.0`. It features full CORS support (`Access-Control-Allow-Origin: *`) for web applications like `tiger.wentzel.dev/audio.html`.
+
+### Available Endpoints
+
+- **`GET /api/songs`** (or **`GET /data.json`**): Returns the full library of songs as a JSON array matching the schema expected by jQuery DataTables:
+  ```json
+  [
+    {
+      "song_id": 1,
+      "name": "YOUR NEW MORNING ALARM",
+      "num_plays": 89,
+      "is_clip": 0,
+      "duration": 58,
+      "username": "Steven",
+      "added_by": "Steven",
+      "url": "https://www.youtube.com/watch?v=enYdAxVcNZA",
+      "source": "songs/YOUR NEW MORNING ALARM.webm",
+      "last_played": 1794458872
+    }
+  ]
+  ```
+- **`OPTIONS /api/songs`** (and `/data.json`): Handles browser CORS preflight requests (HTTP 204 No Content).
+- **`GET /health`**: Returns service health status, song count, and endpoint discovery.
+
+### DataTables Configuration (`/audio.html`)
+
+```javascript
+$('#songTable').DataTable({
+    "ajax": {
+        "url": "http://<server-ip-or-domain>:8080/api/songs", // or reverse-proxied /data.json
+        "dataSrc": ""
+    },
+    columns: [
+        { data: 'song_id' },
+        { data: 'name' },
+        { data: 'num_plays' },
+        { data: 'is_clip' },
+        { data: 'duration' },
+        { data: 'username' }
+    ]
+});
+```
+
+In addition to the live HTTP API, the bot automatically exports and maintains an updated static file at `./html/data.json` (mounted to `/var/www/html/data.json` in Docker) on startup and whenever songs are downloaded or played.
 
 ---
 

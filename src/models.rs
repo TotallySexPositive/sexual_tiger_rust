@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use sqlx::FromRow;
 
 #[derive(Debug, Clone, FromRow)]
@@ -52,7 +53,7 @@ pub struct PlaylistSong {
     pub song_id: i64,
 }
 
-#[derive(Debug, Clone, FromRow)]
+#[derive(Debug, Clone, FromRow, Serialize, Deserialize)]
 pub struct Song {
     pub song_id: Option<i64>,
     pub name: String,

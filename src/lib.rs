@@ -1,4 +1,7 @@
+pub mod api;
 pub mod models;
+
+pub use api::{export_data_json, get_all_songs_api, start_api_server, SongApiDto};
 
 use crate::models::{NewSong, Playlist, Song};
 use dotenvy::dotenv;
@@ -269,7 +272,7 @@ pub async fn download_song(uri: String) -> Result<DownloadResult, String> {
     ];
 
     let output = TokioCommand::new("yt-dlp")
-        .args(&ytdl_args)
+        .args(ytdl_args)
         .stdin(Stdio::null())
         .output()
         .await
@@ -503,12 +506,52 @@ pub async fn record_song_play(pool: &SqlitePool, song_id: i64, current_plays: i3
         .bind(song_id)
         .execute(pool)
         .await?;
+
+    let pool_export = pool.clone();
+    tokio::spawn(async move {
+        let _ = export_data_json(&pool_export).await;
+    });
+
     Ok(())
 }
 
-pub async fn get_playlist_by_name(pool: &SqlitePool, name: &str) -> Result<Option<Playlist>, sqlx::Error> {
-    sqlx::query_as::<_, Playlist>("SELECT * FROM playlist WHERE name = ?")
-        .bind(name)
+pub async fn get_playlist_by_name(pool: &SqlitePool, query: &str) -> Result<Option<Playlist>, sqlx::Error> {
+    let trimmed = query.trim();
+
+    // 0. ID match if query parses as integer
+    if let Ok(id) = trimmed.parse::<i64>() {
+        if let Some(pl) = sqlx::query_as::<_, Playlist>("SELECT * FROM playlist WHERE playlist_id = ? LIMIT 1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+        {
+            return Ok(Some(pl));
+        }
+    }
+
+    // 1. Exact match
+    if let Some(pl) = sqlx::query_as::<_, Playlist>("SELECT * FROM playlist WHERE name = ? LIMIT 1")
+        .bind(trimmed)
+        .fetch_optional(pool)
+        .await?
+    {
+        return Ok(Some(pl));
+    }
+
+    // 2. Prefix match
+    let prefix = format!("{}%", trimmed);
+    if let Some(pl) = sqlx::query_as::<_, Playlist>("SELECT * FROM playlist WHERE name LIKE ? LIMIT 1")
+        .bind(&prefix)
+        .fetch_optional(pool)
+        .await?
+    {
+        return Ok(Some(pl));
+    }
+
+    // 3. Substring match
+    let substring = format!("%{}%", trimmed);
+    sqlx::query_as::<_, Playlist>("SELECT * FROM playlist WHERE name LIKE ? LIMIT 1")
+        .bind(&substring)
         .fetch_optional(pool)
         .await
 }
@@ -528,17 +571,72 @@ pub async fn create_playlist(
 }
 
 pub async fn delete_playlist(pool: &SqlitePool, name: &str) -> Result<bool, sqlx::Error> {
-    let result = sqlx::query("DELETE FROM playlist WHERE name = ?")
-        .bind(name)
-        .execute(pool)
-        .await?;
-    Ok(result.rows_affected() > 0)
+    if let Some(pl) = get_playlist_by_name(pool, name).await? {
+        let result = sqlx::query("DELETE FROM playlist WHERE playlist_id = ?")
+            .bind(pl.playlist_id)
+            .execute(pool)
+            .await?;
+        return Ok(result.rows_affected() > 0);
+    }
+    Ok(false)
 }
 
 pub async fn list_playlists(pool: &SqlitePool) -> Result<Vec<Playlist>, sqlx::Error> {
-    sqlx::query_as::<_, Playlist>("SELECT * FROM playlist ORDER BY name ASC")
+    sqlx::query_as::<_, Playlist>("SELECT * FROM playlist ORDER BY playlist_id ASC")
         .fetch_all(pool)
         .await
+}
+
+pub fn format_playlists_pages(playlists: &[(Playlist, String)]) -> Vec<String> {
+    if playlists.is_empty() {
+        return vec!["No playlists found. Create one with `~playlist create <name>`!".to_string()];
+    }
+
+    const PAGE_SIZE: usize = 25;
+    let total = playlists.len();
+    let mut pages = Vec::new();
+
+    for (page_idx, chunk) in playlists.chunks(PAGE_SIZE).enumerate() {
+        let start_rank = page_idx * PAGE_SIZE + 1;
+        let end_rank = start_rank + chunk.len() - 1;
+
+        let mut table = String::new();
+        table.push_str(&format!(
+            "{:>5} | {:>5} | {:<16} | {}\n",
+            "ID", "Songs", "Created By", "Name"
+        ));
+        table.push_str("------+-------+------------------+----------------------------------------\n");
+
+        for (p, creator) in chunk.iter() {
+            let id = p.playlist_id.unwrap_or(0);
+            let songs = p.num_songs;
+            let display_creator = if creator.chars().count() > 16 {
+                let truncated: String = creator.chars().take(13).collect();
+                format!("{}...", truncated)
+            } else {
+                creator.clone()
+            };
+            let display_name = if p.name.chars().count() > 40 {
+                let truncated: String = p.name.chars().take(37).collect();
+                format!("{}...", truncated)
+            } else {
+                p.name.clone()
+            };
+
+            table.push_str(&format!(
+                "{:>5} | {:>5} | {:<16} | {}\n",
+                id, songs, display_creator, display_name
+            ));
+        }
+
+        let page_msg = format!(
+            "📑 **Playlists ({}-{} of {}):**\n```text\n{}```",
+            start_rank, end_rank, total, table
+        );
+        pages.push(page_msg);
+    }
+
+    pages
 }
 
 pub async fn add_song_to_playlist(
@@ -647,6 +745,13 @@ mod tests {
             .expect("Query failed")
             .expect("Playlist not found");
         assert_eq!(pl.num_songs, 0);
+
+        // Verify lookup by ID as well
+        let pl_by_id = get_playlist_by_name(&pool, &pl_id.to_string())
+            .await
+            .expect("Query by ID failed")
+            .expect("Playlist not found by ID");
+        assert_eq!(pl_by_id.name, "Test Playlist");
 
         // Find existing song
         let song = find_song_by_query(&pool, "Wow")
@@ -878,5 +983,36 @@ mod tests {
         assert!(pages[0].contains("  101 |    99 |  3:05 | Song Number 1"));
         assert!(pages[1].contains("Top Played Songs (26-30 of 30)"));
         assert!(pages[1].contains("  126 |    74 |  3:05 | Song Number 26"));
+    }
+
+    #[test]
+    fn test_format_playlists_pages() {
+        let sample: Vec<(Playlist, String)> = vec![
+            (
+                Playlist {
+                    playlist_id: Some(1),
+                    name: "Kimi no Na wa".to_string(),
+                    num_songs: 5,
+                    created_by: "Papa".to_string(),
+                },
+                "Papa".to_string(),
+            ),
+            (
+                Playlist {
+                    playlist_id: Some(2),
+                    name: "LPO - Greatest Video Game Music".to_string(),
+                    num_songs: 20,
+                    created_by: "Steven".to_string(),
+                },
+                "Steven".to_string(),
+            ),
+        ];
+
+        let pages = format_playlists_pages(&sample);
+        assert_eq!(pages.len(), 1);
+        assert!(pages[0].contains("Playlists (1-2 of 2)"));
+        assert!(pages[0].contains("   ID | Songs | Created By       | Name"));
+        assert!(pages[0].contains("    1 |     5 | Papa             | Kimi no Na wa"));
+        assert!(pages[0].contains("    2 |    20 | Steven           | LPO - Greatest Video Game Music"));
     }
 }

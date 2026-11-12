@@ -44,6 +44,7 @@ pub fn get_general_help_embed() -> CreateEmbed {
              • `stop` — Stop audio playback and clear the queue\n\
              • `pause` / `resume` — Pause or resume the current stream\n\
              • `queue` — View how many songs are in the queue\n\
+             • `shuffle [name | ID#]` — Shuffle upcoming queue tracks, or shuffle and play a playlist\n\
              • `songs [query | ID#]` — Display top 100 played songs table (with IDs) or search",
             false,
         )
@@ -62,7 +63,8 @@ pub fn get_general_help_embed() -> CreateEmbed {
              • `playlist delete <name>` — Delete an existing playlist\n\
              • `playlist add \"<pl>\" <song>` — Add a song to a playlist\n\
              • `playlist remove \"<pl>\" <song>` — Remove a song from a playlist\n\
-             • `playlist play <name>` (or `playplaylist <name>`) — Queue an entire playlist",
+             • `playlist play <name | ID#>` (or `playplaylist`) — Queue an entire playlist\n\
+             • `playlist shuffle <name | ID#>` (or `shuffleplaylist`) — Shuffle and play a playlist",
             false,
         )
         .field(
@@ -129,20 +131,38 @@ pub fn get_command_help_embed(cmd: &str) -> Result<CreateEmbed, String> {
         ),
         "playlist" | "pl" | "playplaylist" | "ppl" => (
             "Command: playlist",
-            "Complete playlist management system. Create playlists, add songs from your library, view songs, and play entire playlists.",
-            "• `~playlist list` — View all saved playlists\n\
-             • `~playlist show <name>` — View songs in a playlist\n\
+            "Complete playlist management system. Create playlists, add songs from your library, view songs, play or shuffle entire playlists by name or playlist ID #. Automatically joins your voice channel when playing.",
+            "• `~playlist list` — View all saved playlists in a formatted table with IDs\n\
+             • `~playlist show <name | ID#>` — View songs in a playlist\n\
              • `~playlist create <name>` — Create a new playlist\n\
-             • `~playlist delete <name>` — Delete a playlist\n\
-             • `~playlist add \"<pl>\" <song>` — Add a song to playlist\n\
-             • `~playlist remove \"<pl>\" <song>` — Remove a song from playlist\n\
-             • `~playlist play <name>` (or `~playplaylist <name>`) — Queue all songs in playlist\n\
+             • `~playlist delete <name | ID#>` — Delete a playlist\n\
+             • `~playlist add \"<pl | ID#>\" <song>` — Add a song to playlist\n\
+             • `~playlist remove \"<pl | ID#>\" <song>` — Remove a song from playlist\n\
+             • `~playlist play <name | ID#>` (or `~playplaylist <name | ID#>`) — Queue all songs in playlist\n\
+             • `~playlist shuffle <name | ID#>` (or `~shuffleplaylist <name | ID#>`) — Shuffle and play all songs in playlist\n\
              • `/playlist [subcommand]`",
             "`pl`, `playplaylist`, `ppl`",
             "• `~playlist list`\n\
+             • `~playlist play 1`\n\
+             • `~playlist shuffle 1`\n\
              • `~playlist create Party Hits`\n\
-             • `~playlist add \"Party Hits\" wow`\n\
-             • `/playlist play name:Party Hits`",
+             • `~playlist add 1 wow`\n\
+             • `/playlist shuffle name:Party Hits`",
+        ),
+        "shuffle" | "shuf" | "shuffleplaylist" | "spl" => (
+            "Command: shuffle",
+            "Shuffles audio playback. When passed a playlist name or ID #, it loads the playlist in random order and begins playback (autojoins voice channel). When run with no arguments, it shuffles the upcoming tracks currently waiting in the voice playback queue.",
+            "• `~shuffle` (shuffles current queue)\n\
+             • `~shuffle <playlist name | ID#>`\n\
+             • `~playlist shuffle <name | ID#>`\n\
+             • `~shuffleplaylist <name | ID#>`\n\
+             • `/shuffle [playlist:<name | ID#>]`\n\
+             • `/playlist shuffle name:<name | ID#>`",
+            "`shuf`, `shuffleplaylist`, `spl`",
+            "• `~shuffle`\n\
+             • `~shuffle 1`\n\
+             • `~shuffle Party Hits`\n\
+             • `/shuffle playlist:1`",
         ),
         "songs" | "list" => (
             "Command: songs",
