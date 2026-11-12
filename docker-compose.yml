@@ -1,0 +1,49 @@
+version: "3.8"
+
+services:
+  sexualtiger:
+    image: asralis/my-sexual-tiger:latest
+    build:
+      context: .
+      dockerfile: ./Dockerfile
+    restart: unless-stopped
+
+    environment:
+      - DATABASE_URL=playlists.sql
+      - SONG_DIRECTORY=songs/
+      - DISCORD_TOKEN=${DISCORD_TOKEN:-}
+      - GIPHY_TOKEN=${GIPHY_TOKEN:-}
+    volumes:
+      # Database file and SQLite WAL files (if WAL mode is used)
+      - type: bind
+        source: ./playlists.sql
+        target: /usr/src/app/playlists.sql
+      - type: bind
+        source: ./playlists.sql-shm
+        target: /usr/src/app/playlists.sql-shm
+        # Note: If playlists.sql-shm doesn't exist on host, comment out this line or create it (touch playlists.sql-shm)
+      - type: bind
+        source: ./playlists.sql-wal
+        target: /usr/src/app/playlists.sql-wal
+        # Note: If playlists.sql-wal doesn't exist on host, comment out this line or create it (touch playlists.sql-wal)
+
+      # Audio storage (legacy ./audio or ./songs are both supported and linked)
+      - type: bind
+        source: ./audio
+        target: /usr/src/app/songs
+      - type: bind
+        source: ./images
+        target: /usr/src/app/images
+
+      # Legacy auth & configuration files (fallback if not using environment variables)
+      - type: bind
+        source: ./auth.json
+        target: /usr/src/app/auth.json
+      - type: bind
+        source: ./configure.json
+        target: /usr/src/app/configure.json
+
+      # Legacy HTML directory
+      - type: bind
+        source: ./html
+        target: /var/www/html

@@ -1,3 +1,4 @@
+use serenity::async_trait;
 use serenity::client::Context;
 use serenity::framework::standard::macros::command;
 use serenity::framework::standard::{Args, CommandResult};
@@ -6,8 +7,28 @@ use serenity::Result as SerenityResult;
 use sexual_tiger::{
     add_song_to_playlist, create_playlist, delete_playlist, find_song_by_query,
     get_playlist_by_name, get_playlist_songs, list_playlists, record_song_play,
-    remove_song_from_playlist, DatabasePool,
+    remove_song_from_playlist, resolve_song_path, DatabasePool,
 };
+use songbird::events::{Event, EventContext, EventHandler, TrackEvent};
+
+struct TrackErrorNotifier;
+
+#[async_trait]
+impl EventHandler for TrackErrorNotifier {
+    async fn act(&self, ctx: &EventContext<'_>) -> Option<Event> {
+        if let EventContext::Track(track_list) = ctx {
+            for (state, handle) in *track_list {
+                eprintln!(
+                    "Playlist audio track {:?} encountered error. Position: {:?}, Error: {:?}",
+                    handle.uuid(),
+                    state.position,
+                    state.playing
+                );
+            }
+        }
+        None
+    }
+}
 
 #[command]
 #[aliases("pl")]
@@ -519,8 +540,10 @@ async fn play_playlist_internal(
     {
         let mut handler = handler_lock.lock().await;
         for s in &songs {
-            let input: songbird::input::Input = songbird::input::File::new(s.source.clone()).into();
+            let path = resolve_song_path(&s.source);
+            let input: songbird::input::Input = songbird::input::File::new(path).into();
             let track = handler.enqueue_input(input).await;
+            let _ = track.add_event(Event::Track(TrackEvent::Error), TrackErrorNotifier);
             if s.is_clip.unwrap_or(0) == 1 {
                 let _ = track.set_volume(5.0);
             } else {

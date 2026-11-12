@@ -48,6 +48,15 @@ pub async fn gif(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
     let data = ctx.data.read().await;
     let api_key = &data.get::<AuthData>().unwrap().giphy;
 
+    if api_key.is_empty() {
+        msg.reply(
+            ctx,
+            "Giphy token is not configured. Set GIPHY_TOKEN in your environment or auth.json to use ~gif.",
+        )
+        .await?;
+        return Ok(());
+    }
+
     let query = args.rest();
     let res = reqwest::get(&format!(
         "https://api.giphy.com/v1/gifs/random?api_key={}&tag={}&rating=r",

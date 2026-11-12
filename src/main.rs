@@ -3,8 +3,6 @@
 mod commands;
 mod myauth;
 
-use std::env;
-
 use crate::commands::download::*;
 use crate::commands::fuckoff::*;
 use crate::commands::gif::*;
@@ -58,10 +56,11 @@ async fn main() {
     let framework = StandardFramework::new().group(&GENERAL_GROUP);
     framework.configure(Configuration::new().prefix("~"));
 
-    // Configure the client with your Discord bot token in the environment.
-    let discord = env::var("DISCORD_TOKEN").expect("Expected a token in the environment");
-    let giphy = env::var("GIPHY_TOKEN").expect("Expected GIPHY_TOKEN in env");
-    let auth = AuthData { giphy, discord };
+    // Load authentication credentials from environment variables, .env, or auth.json/configure.json
+    let auth = AuthData::load().unwrap_or_else(|err| {
+        eprintln!("Error: {}", err);
+        std::process::exit(1);
+    });
 
     let pool = establish_connection_pool().await;
 

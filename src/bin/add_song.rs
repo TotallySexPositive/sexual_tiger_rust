@@ -8,7 +8,7 @@ async fn main() {
         .expect("add_song requires a uri argument");
 
     let pool = establish_connection_pool().await;
-    let song_dir = env::var("SONG_DIRECTORY").expect("SONG_DIRECTORY must be set");
+    let song_dir = get_song_directory();
 
     let meta = download_song(uri)
         .await

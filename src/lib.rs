@@ -23,7 +23,7 @@ impl TypeMapKey for DatabasePool {
 pub async fn establish_connection_pool() -> SqlitePool {
     dotenv().ok();
 
-    let database_url = env::var("DATABASE_URL").expect("DATABASE_URL must be set");
+    let database_url = env::var("DATABASE_URL").unwrap_or_else(|_| "playlists.sql".to_string());
     let connection_string = if database_url.starts_with("sqlite:") {
         database_url
     } else {
@@ -41,8 +41,36 @@ pub async fn establish_connection_pool() -> SqlitePool {
         .unwrap_or_else(|e| panic!("Error connecting to {}: {}", connection_string, e))
 }
 
+pub fn get_song_directory() -> String {
+    env::var("SONG_DIRECTORY").unwrap_or_else(|_| {
+        if std::path::Path::new("audio").is_dir() && !std::path::Path::new("songs").is_dir() {
+            "audio".to_string()
+        } else {
+            "songs".to_string()
+        }
+    })
+}
+
+pub fn resolve_song_path(source: &str) -> String {
+    if std::path::Path::new(source).exists() {
+        return source.to_string();
+    }
+    if source.starts_with("songs/") {
+        let alt = source.replacen("songs/", "audio/", 1);
+        if std::path::Path::new(&alt).exists() {
+            return alt;
+        }
+    } else if source.starts_with("audio/") {
+        let alt = source.replacen("audio/", "songs/", 1);
+        if std::path::Path::new(&alt).exists() {
+            return alt;
+        }
+    }
+    source.to_string()
+}
+
 pub async fn download_song(uri: String) -> Result<AuxMetadata, String> {
-    let song_dir = env::var("SONG_DIRECTORY").expect("SONG_DIRECTORY must be set");
+    let song_dir = get_song_directory();
     let _dir = fs::create_dir_all(&song_dir).map_err(|e| format!("Couldn't create SONG_DIRECTORY: {}", e))?;
 
     let ytdl_args = [
@@ -433,5 +461,21 @@ mod tests {
         let results = search_songs(&pool, "ALARM").await.expect("search_songs failed");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "YOUR NEW MORNING ALARM");
+    }
+
+    #[tokio::test]
+    async fn test_symphonia_webm_probing() {
+        use songbird::input::codecs::{get_codec_registry, get_probe};
+        use songbird::input::File;
+
+        let input: songbird::input::Input = File::new("audio/Wow Sound Effect.webm").into();
+        let live = input.make_live_async().await.expect("Failed to make live");
+        if let songbird::input::Input::Live(live_input, _) = live {
+            let res = live_input.promote(get_codec_registry(), get_probe());
+            match res {
+                Ok(_) => println!("PROBE SUCCEEDED!"),
+                Err(e) => panic!("PROBE FAILED: {:?}", e),
+            }
+        }
     }
 }

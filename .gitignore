@@ -1,4 +1,10 @@
 target
 songs
+audio
 playlists.sql
+playlists.sql-shm
+playlists.sql-wal
 *.log
+auth.json
+configure.json
+.env

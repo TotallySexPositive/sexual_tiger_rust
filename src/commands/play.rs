@@ -1,3 +1,4 @@
+use serenity::async_trait;
 use serenity::client::Context;
 use serenity::framework::standard::macros::command;
 use serenity::framework::standard::{Args, CommandResult};
@@ -6,6 +7,26 @@ use serenity::Result as SerenityResult;
 use sexual_tiger::{
     find_song_by_query, list_songs, record_song_play, search_songs, DatabasePool,
 };
+use songbird::events::{Event, EventContext, EventHandler, TrackEvent};
+
+struct TrackErrorNotifier;
+
+#[async_trait]
+impl EventHandler for TrackErrorNotifier {
+    async fn act(&self, ctx: &EventContext<'_>) -> Option<Event> {
+        if let EventContext::Track(track_list) = ctx {
+            for (state, handle) in *track_list {
+                eprintln!(
+                    "Audio track {:?} encountered error. Position: {:?}, Error: {:?}",
+                    handle.uuid(),
+                    state.position,
+                    state.playing
+                );
+            }
+        }
+        None
+    }
+}
 
 #[command]
 pub async fn play(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
@@ -72,13 +93,26 @@ pub async fn play(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
 
         println!("Playing local song: {:?}", &the_song);
 
+        let resolved_source = sexual_tiger::resolve_song_path(&the_song.source);
+        if !std::path::Path::new(&resolved_source).exists() {
+            check_msg(
+                msg.channel_id
+                    .say(
+                        &ctx.http,
+                        format!("Warning: Audio file not found on disk at `{}`. Please check mounted audio volume.", resolved_source),
+                    )
+                    .await,
+            );
+        }
+
         let input: songbird::input::Input =
-            songbird::input::File::new(the_song.source.clone()).into();
+            songbird::input::File::new(resolved_source).into();
 
         if let Some(handler_lock) = manager.get(guild_id) {
             let mut handler = handler_lock.lock().await;
 
             let track = handler.enqueue_input(input).await;
+            let _ = track.add_event(Event::Track(TrackEvent::Error), TrackErrorNotifier);
             if the_song.is_clip.unwrap_or(0) == 1 {
                 let _ = track.set_volume(5.0);
             } else {
@@ -127,7 +161,8 @@ pub async fn play(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
         let input: songbird::input::Input =
             songbird::input::YoutubeDl::new(reqwest::Client::new(), in_query).into();
 
-        let _track = handler.enqueue_input(input).await;
+        let track = handler.enqueue_input(input).await;
+        let _ = track.add_event(Event::Track(TrackEvent::Error), TrackErrorNotifier);
         let q_len = handler.queue().len();
         if q_len > 1 {
             check_msg(

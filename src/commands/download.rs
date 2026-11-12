@@ -1,5 +1,4 @@
 use sexual_tiger::{download_song, insert_song, new_song, DatabasePool};
-use std::env;
 
 use serenity::client::Context;
 use serenity::framework::standard::macros::command;
@@ -20,7 +19,7 @@ pub async fn download(ctx: &Context, msg: &Message, mut args: Args) -> CommandRe
         }
     };
 
-    let song_dir = env::var("SONG_DIRECTORY").expect("SONG_DIRECTORY must be set");
+    let song_dir = sexual_tiger::get_song_directory();
 
     let pool = {
         let data = ctx.data.read().await;

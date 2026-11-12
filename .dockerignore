@@ -1,0 +1,9 @@
+target/
+.git/
+.gitignore
+*.log
+neovide_backtraces.log
+.env
+auth.json
+configure.json
+
