@@ -38,13 +38,13 @@ pub fn get_general_help_embed() -> CreateEmbed {
         )
         .field(
             "🎵 Music & Playback",
-            "• `play <name | url>` — Play library song or stream YouTube URL\n\
+            "• `play <name | ID# | url>` — Play library song by name/ID, or stream YouTube URL\n\
              • `download <url>` — Download audio to local library and database\n\
              • `skip` — Skip to the next song in the queue\n\
              • `stop` — Stop audio playback and clear the queue\n\
              • `pause` / `resume` — Pause or resume the current stream\n\
              • `queue` — View how many songs are in the queue\n\
-             • `songs [query]` — List library songs or search by name",
+             • `songs [query | ID#]` — Display top 100 played songs table (with IDs) or search",
             false,
         )
         .field(
@@ -91,11 +91,11 @@ pub fn get_command_help_embed(cmd: &str) -> Result<CreateEmbed, String> {
     let (title, description, usage, aliases, examples) = match clean {
         "play" | "p" => (
             "Command: play",
-            "Plays a song from the local database or streams audio from a web URL. \
+            "Plays a song from the local database by title or database ID #, or streams audio from a web URL. \
              If the bot is not yet in a voice channel, it will automatically join yours.",
-            "• `~play <song name>`\n• `~play <youtube url>`\n• `/play query:<song | url>`",
+            "• `~play <song name | ID#>`\n• `~play <youtube url>`\n• `/play query:<song | ID# | url>`",
             "`p` (prefix only)",
-            "• `~play wow`\n• `~play alarm`\n• `/play query:https://www.youtube.com/watch?v=dQw4w9WgXcQ`",
+            "• `~play wow`\n• `~play 1` (plays song ID 1)\n• `/play query:https://www.youtube.com/watch?v=dQw4w9WgXcQ`",
         ),
         "download" | "dl" => (
             "Command: download",
@@ -146,11 +146,11 @@ pub fn get_command_help_embed(cmd: &str) -> Result<CreateEmbed, String> {
         ),
         "songs" | "list" => (
             "Command: songs",
-            "Lists songs stored in the database. If no search query is provided, displays the first 25 songs alphabetically. \
-             If a query is given, searches song titles matching the query.",
-            "• `~songs [search term]`\n• `/songs [query:<term>]`",
+            "Displays the top 100 played songs sorted by play count in a clean table format with each song's database ID. \
+             If a query is given, searches song titles or database ID matching the query.",
+            "• `~songs [query | ID#]`\n• `/songs [query:<term | ID#>]`",
             "`list` (prefix only)",
-            "• `~songs`\n• `~songs alarm`\n• `/songs query:wow`",
+            "• `~songs`\n• `~songs 1`\n• `~songs alarm`\n• `/songs query:wow`",
         ),
         "skip" | "s" => (
             "Command: skip",

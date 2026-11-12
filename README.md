@@ -79,14 +79,14 @@ Sexual Tiger supports **both** classic prefix commands (`~`) and modern native D
 
 | Prefix Command | Slash Command | Arguments | Description | Example |
 |---|---|---|---|---|
-| `~play` | `/play` | `query: <song \| url>` | Searches database (exact, prefix, substring) or streams live audio from YouTube | `~play wow`<br>`/play query:https://youtu.be/...` |
+| `~play` | `/play` | `query: <name \| ID# \| url>` | Searches database by ID #, exact title, prefix, or substring; or streams live audio from YouTube | `~play 1`<br>`~play wow`<br>`/play query:https://youtu.be/...` |
 | `~download` | `/download` | `url: <url>` | Downloads audio via `yt-dlp`, computes SHA-256 hash, and inserts into library | `~download https://youtu.be/...`<br>`/download url:https://youtu.be/...` |
 | `~skip` | `/skip` | — | Skips the currently playing track | `~skip`<br>`/skip` |
 | `~stop` | `/stop` | — | Stops audio playback and clears the entire queue | `~stop`<br>`/stop` |
 | `~pause` | `/pause` | — | Pauses playback of the active track | `~pause`<br>`/pause` |
 | `~resume` | `/resume` | — | Resumes playback of a paused track | `~resume`<br>`/resume` |
 | `~queue` | `/queue` | — | Displays the total number of songs queued | `~queue`<br>`/queue` |
-| `~songs` | `/songs` | `[query: <term>]` | Lists first 25 songs or searches song titles matching `query` | `~songs alarm`<br>`/songs query:alarm` |
+| `~songs` | `/songs` | `[query: <term \| ID#>]` | Displays top 100 played songs sorted by plays (or search results) in a formatted table with database IDs | `~songs`<br>`~songs 1`<br>`/songs query:alarm` |
 
 ---
 
@@ -115,8 +115,8 @@ Adjusts playback volume in real-time for the active stream and applies across al
 | `~playlist show <name>` | `/playlist show` | `name: <name>` | View songs in a specific playlist | `~playlist show Party`<br>`/playlist show name:Party` |
 | `~playlist create <name>` | `/playlist create` | `name: <name>` | Create a new empty playlist | `~playlist create Gym Mix`<br>`/playlist create name:Gym Mix` |
 | `~playlist delete <name>` | `/playlist delete` | `name: <name>` | Permanently delete a playlist | `~playlist delete Gym Mix`<br>`/playlist delete name:Gym Mix` |
-| `~playlist add "<pl>" <song>` | `/playlist add` | `playlist: <pl> song: <song>` | Add song from library to playlist | `~playlist add "Gym Mix" alarm`<br>`/playlist add playlist:Gym Mix song:alarm` |
-| `~playlist remove "<pl>" <song>` | `/playlist remove` | `playlist: <pl> song: <song>` | Remove song from playlist | `~playlist remove "Gym Mix" alarm`<br>`/playlist remove playlist:Gym Mix song:alarm` |
+| `~playlist add "<pl>" <song>` | `/playlist add` | `playlist: <pl> song: <name \| ID#>` | Add song from library (by name or ID #) to playlist | `~playlist add "Gym Mix" 1`<br>`/playlist add playlist:Gym Mix song:alarm` |
+| `~playlist remove "<pl>" <song>` | `/playlist remove` | `playlist: <pl> song: <name \| ID#>` | Remove song from playlist (by name or ID #) | `~playlist remove "Gym Mix" 1`<br>`/playlist remove playlist:Gym Mix song:alarm` |
 | `~playlist play <name>` | `/playlist play` | `name: <name>` | Queue and play all songs in a playlist | `~playlist play Gym Mix`<br>`/playlist play name:Gym Mix` |
 | `~playplaylist <name>` | — | `<name>` | Shortcut prefix command to play an entire playlist | `~playplaylist Gym Mix` |
 

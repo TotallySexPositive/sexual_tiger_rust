@@ -66,7 +66,7 @@ pub async fn playlist(ctx: &Context, msg: &Message, mut args: Args) -> CommandRe
                                 p.name, p.num_songs, p.created_by
                             ));
                         }
-                        check_msg(msg.channel_id.say(&ctx.http, response).await);
+                        crate::commands::send_chunked(ctx, msg.channel_id, &response).await;
                     }
                 }
                 Err(e) => {
@@ -209,14 +209,15 @@ pub async fn playlist(ctx: &Context, msg: &Message, mut args: Args) -> CommandRe
                                 None => "unknown".to_string(),
                             };
                             response.push_str(&format!(
-                                "{}. **{}** [{}] ({} plays)\n",
+                                "{}. **{}** (ID: {}) [{}] ({} plays)\n",
                                 i + 1,
                                 s.name,
+                                s.song_id.unwrap_or(0),
                                 duration_str,
                                 s.num_plays.unwrap_or(0)
                             ));
                         }
-                        check_msg(msg.channel_id.say(&ctx.http, response).await);
+                        crate::commands::send_chunked(ctx, msg.channel_id, &response).await;
                     }
                 }
                 Err(e) => {
@@ -302,7 +303,7 @@ pub async fn playlist(ctx: &Context, msg: &Message, mut args: Args) -> CommandRe
                         msg.channel_id
                             .say(
                                 &ctx.http,
-                                format!("Added **{}** to playlist **{}**!", song.name, pl.name),
+                                format!("Added **{}** (ID: {}) to playlist **{}**!", song.name, song_id, pl.name),
                             )
                             .await,
                     );
@@ -390,7 +391,7 @@ pub async fn playlist(ctx: &Context, msg: &Message, mut args: Args) -> CommandRe
                         msg.channel_id
                             .say(
                                 &ctx.http,
-                                format!("Removed **{}** from playlist **{}**.", song.name, pl.name),
+                                format!("Removed **{}** (ID: {}) from playlist **{}**.", song.name, song_id, pl.name),
                             )
                             .await,
                     );
@@ -400,7 +401,7 @@ pub async fn playlist(ctx: &Context, msg: &Message, mut args: Args) -> CommandRe
                         msg.channel_id
                             .say(
                                 &ctx.http,
-                                format!("**{}** was not found in playlist **{}**.", song.name, pl.name),
+                                format!("**{}** (ID: {}) was not found in playlist **{}**.", song.name, song_id, pl.name),
                             )
                             .await,
                     );

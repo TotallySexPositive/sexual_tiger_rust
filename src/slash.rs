@@ -44,12 +44,12 @@ pub fn create_slash_commands() -> Vec<CreateCommand> {
     vec![
         // /play
         CreateCommand::new("play")
-            .description("Play a song from the library or stream audio from YouTube")
+            .description("Play a song by name, database ID #, or stream audio from YouTube")
             .add_option(
                 CreateCommandOption::new(
                     CommandOptionType::String,
                     "query",
-                    "Song name from the library or a YouTube URL",
+                    "Song name or database ID # from the library, or a YouTube URL",
                 )
                 .required(true),
             ),
@@ -98,12 +98,12 @@ pub fn create_slash_commands() -> Vec<CreateCommand> {
         CreateCommand::new("queue").description("View how many songs are in the queue"),
         // /songs
         CreateCommand::new("songs")
-            .description("List songs in the library or search by name")
+            .description("Display top 100 played songs table (with IDs) or search by name/ID")
             .add_option(
                 CreateCommandOption::new(
                     CommandOptionType::String,
                     "query",
-                    "Search term to filter songs",
+                    "Search term or database ID # to filter songs",
                 )
                 .required(false),
             ),
@@ -520,10 +520,14 @@ async fn handle_play(
     }
 
     let q_len = handler.queue().len();
+    let id_info = song
+        .song_id
+        .map(|id| format!(" (ID: {})", id))
+        .unwrap_or_default();
     let msg = if q_len > 1 {
-        format!("Queued **{}** (position: {})", song.name, q_len)
+        format!("Queued **{}**{} (position: {})", song.name, id_info, q_len)
     } else {
-        format!("Playing **{}** 🎶", song.name)
+        format!("Playing **{}**{} 🎶", song.name, id_info)
     };
 
     if let Some(sid) = song.song_id {
@@ -778,53 +782,66 @@ async fn handle_queue(ctx: &Context, command: &CommandInteraction, guild_id: Gui
     }
 }
 
+async fn edit_or_followup_chunked(
+    ctx: &Context,
+    command: &CommandInteraction,
+    text: &str,
+) {
+    use serenity::builder::CreateInteractionResponseFollowup;
+    let chunks = sexual_tiger::chunk_text(text, 1900);
+    if let Some(first) = chunks.first() {
+        let edit = EditInteractionResponse::new().content(first);
+        let _ = command.edit_response(&ctx.http, edit).await;
+    }
+    for subsequent in chunks.iter().skip(1) {
+        if !subsequent.trim().is_empty() {
+            let followup = CreateInteractionResponseFollowup::new().content(subsequent);
+            let _ = command.create_followup(&ctx.http, followup).await;
+        }
+    }
+}
+
 async fn handle_songs(
     ctx: &Context,
     command: &CommandInteraction,
     pool: &sqlx::SqlitePool,
     query: Option<&str>,
 ) {
-    match query {
-        Some(q) if !q.trim().is_empty() => match search_songs(pool, q.trim()).await {
-            Ok(songs) if songs.is_empty() => {
-                let edit = EditInteractionResponse::new().content(format!("No songs found matching \"{}\".", q.trim()));
-                let _ = command.edit_response(&ctx.http, edit).await;
-            }
-            Ok(songs) => {
-                let list: Vec<String> = songs
-                    .iter()
-                    .enumerate()
-                    .map(|(i, s)| format!("{}. **{}**", i + 1, s.name))
-                    .collect();
-                let text = format!("🎶 Found **{}** songs matching \"{}\":\n{}", songs.len(), q.trim(), list.join("\n"));
-                let edit = EditInteractionResponse::new().content(text);
-                let _ = command.edit_response(&ctx.http, edit).await;
-            }
-            Err(e) => {
-                let edit = EditInteractionResponse::new().content(format!("Database error: {}", e));
-                let _ = command.edit_response(&ctx.http, edit).await;
-            }
-        },
-        _ => match list_songs(pool, 25).await {
-            Ok(songs) if songs.is_empty() => {
-                let edit = EditInteractionResponse::new().content("No songs in database yet. Use `/download` to add some!");
-                let _ = command.edit_response(&ctx.http, edit).await;
-            }
-            Ok(songs) => {
-                let list: Vec<String> = songs
-                    .iter()
-                    .enumerate()
-                    .map(|(i, s)| format!("{}. {}", i + 1, s.name))
-                    .collect();
-                let text = format!("🎶 **Available Songs** (showing first 25):\n{}", list.join("\n"));
-                let edit = EditInteractionResponse::new().content(text);
-                let _ = command.edit_response(&ctx.http, edit).await;
-            }
-            Err(e) => {
-                let edit = EditInteractionResponse::new().content(format!("Database error: {}", e));
-                let _ = command.edit_response(&ctx.http, edit).await;
-            }
-        },
+    let (title_prefix, songs) = match query {
+        Some(q) if !q.trim().is_empty() => {
+            let res = search_songs(pool, q.trim()).await;
+            (format!("Search results for \"{}\"", q.trim()), res)
+        }
+        _ => {
+            let res = list_songs(pool, 100).await;
+            ("Top Played Songs".to_string(), res)
+        }
+    };
+
+    let songs = match songs {
+        Ok(s) => s,
+        Err(e) => {
+            let edit = EditInteractionResponse::new().content(format!("Database error: {}", e));
+            let _ = command.edit_response(&ctx.http, edit).await;
+            return;
+        }
+    };
+
+    if songs.is_empty() {
+        let edit = EditInteractionResponse::new().content(format!("No songs found for **{}**.", title_prefix));
+        let _ = command.edit_response(&ctx.http, edit).await;
+        return;
+    }
+
+    let pages = sexual_tiger::format_songs_pages(&title_prefix, &songs);
+    if let Some(first) = pages.first() {
+        let edit = EditInteractionResponse::new().content(first);
+        let _ = command.edit_response(&ctx.http, edit).await;
+    }
+    for page in pages.iter().skip(1) {
+        use serenity::builder::CreateInteractionResponseFollowup;
+        let followup = CreateInteractionResponseFollowup::new().content(page);
+        let _ = command.create_followup(&ctx.http, followup).await;
     }
 }
 
@@ -904,8 +921,7 @@ async fn handle_playlist(
                     .map(|p| format!("• **{}** ({} songs) — by {}", p.name, p.num_songs, p.created_by))
                     .collect();
                 let text = format!("📑 **Playlists:**\n{}", list.join("\n"));
-                let edit = EditInteractionResponse::new().content(text);
-                let _ = command.edit_response(&ctx.http, edit).await;
+                edit_or_followup_chunked(ctx, command, &text).await;
             }
             Err(e) => {
                 let edit = EditInteractionResponse::new().content(format!("Database error: {}", e));
@@ -922,10 +938,20 @@ async fn handle_playlist(
                         let edit = EditInteractionResponse::new().content(format!("Playlist **{}** is empty.", pl.name));
                         let _ = command.edit_response(&ctx.http, edit).await;
                     } else {
-                        let list: Vec<String> = songs.iter().enumerate().map(|(i, s)| format!("{}. {}", i + 1, s.name)).collect();
+                        let list: Vec<String> = songs
+                            .iter()
+                            .enumerate()
+                            .map(|(i, s)| {
+                                format!(
+                                    "{}. **{}** (ID: {})",
+                                    i + 1,
+                                    s.name,
+                                    s.song_id.unwrap_or(0)
+                                )
+                            })
+                            .collect();
                         let text = format!("📑 **{}** ({} songs):\n{}", pl.name, songs.len(), list.join("\n"));
-                        let edit = EditInteractionResponse::new().content(text);
-                        let _ = command.edit_response(&ctx.http, edit).await;
+                        edit_or_followup_chunked(ctx, command, &text).await;
                     }
                 }
                 Ok(None) => {
@@ -1001,9 +1027,10 @@ async fn handle_playlist(
                 }
             };
 
-            match add_song_to_playlist(pool, pl.playlist_id.unwrap(), song.song_id.unwrap()).await {
+            let song_id = song.song_id.unwrap_or(0);
+            match add_song_to_playlist(pool, pl.playlist_id.unwrap(), song_id).await {
                 Ok(_) => {
-                    let edit = EditInteractionResponse::new().content(format!("Added **{}** to playlist **{}**! 🎵", song.name, pl.name));
+                    let edit = EditInteractionResponse::new().content(format!("Added **{}** (ID: {}) to playlist **{}**! 🎵", song.name, song_id, pl.name));
                     let _ = command.edit_response(&ctx.http, edit).await;
                 }
                 Err(e) => {
@@ -1044,13 +1071,14 @@ async fn handle_playlist(
                 }
             };
 
-            match remove_song_from_playlist(pool, pl.playlist_id.unwrap(), song.song_id.unwrap()).await {
+            let song_id = song.song_id.unwrap_or(0);
+            match remove_song_from_playlist(pool, pl.playlist_id.unwrap(), song_id).await {
                 Ok(true) => {
-                    let edit = EditInteractionResponse::new().content(format!("Removed **{}** from playlist **{}**.", song.name, pl.name));
+                    let edit = EditInteractionResponse::new().content(format!("Removed **{}** (ID: {}) from playlist **{}**.", song.name, song_id, pl.name));
                     let _ = command.edit_response(&ctx.http, edit).await;
                 }
                 Ok(false) => {
-                    let edit = EditInteractionResponse::new().content(format!("Song **{}** is not in playlist **{}**.", song.name, pl.name));
+                    let edit = EditInteractionResponse::new().content(format!("Song **{}** (ID: {}) is not in playlist **{}**.", song.name, song_id, pl.name));
                     let _ = command.edit_response(&ctx.http, edit).await;
                 }
                 Err(e) => {

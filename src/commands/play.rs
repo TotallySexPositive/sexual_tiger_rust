@@ -120,19 +120,23 @@ pub async fn play(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
             }
 
             let q_len = handler.queue().len();
+            let id_info = the_song
+                .song_id
+                .map(|id| format!(" (ID: {})", id))
+                .unwrap_or_default();
             if q_len > 1 {
                 check_msg(
                     msg.channel_id
                         .say(
                             &ctx.http,
-                            format!("Queued **{}** (position: {})", &the_song.name, q_len),
+                            format!("Queued **{}**{} (position: {})", &the_song.name, id_info, q_len),
                         )
                         .await,
                 );
             } else {
                 check_msg(
                     msg.channel_id
-                        .say(&ctx.http, format!("Playing **{}**", &the_song.name))
+                        .say(&ctx.http, format!("Playing **{}**{}", &the_song.name, id_info))
                         .await,
                 );
             }
@@ -365,7 +369,7 @@ pub async fn songs(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
     let search_query = args.remains().map(|q| q.trim()).unwrap_or("");
 
     let song_list = if search_query.is_empty() {
-        match list_songs(&pool, 25).await {
+        match list_songs(&pool, 100).await {
             Ok(s) => s,
             Err(e) => {
                 check_msg(
@@ -410,28 +414,16 @@ pub async fn songs(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
         return Ok(());
     }
 
-    let mut response = if search_query.is_empty() {
-        String::from("**Available Songs (first 25):**\n")
+    let title_prefix = if search_query.is_empty() {
+        "Top Played Songs".to_string()
     } else {
-        format!("**Search results for \"{}\":**\n", search_query)
+        format!("Search results for \"{}\"", search_query)
     };
 
-    for s in song_list {
-        let duration_str = match s.duration {
-            Some(d) => format!("{}:{:02}", d / 60, d % 60),
-            None => "unknown".to_string(),
-        };
-        let is_clip_str = if s.is_clip.unwrap_or(0) == 1 { " [Clip]" } else { "" };
-        response.push_str(&format!(
-            "• **{}** [{}]{} ({} plays)\n",
-            s.name,
-            duration_str,
-            is_clip_str,
-            s.num_plays.unwrap_or(0)
-        ));
+    let pages = sexual_tiger::format_songs_pages(&title_prefix, &song_list);
+    for page in pages {
+        check_msg(msg.channel_id.say(&ctx.http, page).await);
     }
-
-    check_msg(msg.channel_id.say(&ctx.http, response).await);
     Ok(())
 }
 

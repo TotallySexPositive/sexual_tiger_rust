@@ -129,6 +129,45 @@ pub fn resolve_song_path(source: &str) -> String {
     source.to_string()
 }
 
+pub fn chunk_text(text: &str, max_len: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+
+    for line in text.lines() {
+        if !current.is_empty() && current.len() + line.len() + 1 > max_len {
+            chunks.push(current);
+            current = String::new();
+        }
+
+        if line.len() > max_len {
+            let mut start = 0;
+            while start < line.len() {
+                let mut end = (start + max_len).min(line.len());
+                while !line.is_char_boundary(end) {
+                    end -= 1;
+                }
+                chunks.push(line[start..end].to_string());
+                start = end;
+            }
+        } else {
+            if !current.is_empty() {
+                current.push('\n');
+            }
+            current.push_str(line);
+        }
+    }
+
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+
+    if chunks.is_empty() {
+        chunks.push(String::new());
+    }
+
+    chunks
+}
+
 pub fn clean_youtube_url(url: &str) -> String {
     if url.contains("youtube.com/watch") || url.contains("m.youtube.com/watch") {
         if url.contains("list=") {
@@ -321,6 +360,19 @@ pub async fn find_song_by_name_prefix(pool: &SqlitePool, prefix: &str) -> Result
 }
 
 pub async fn find_song_by_query(pool: &SqlitePool, query: &str) -> Result<Option<Song>, sqlx::Error> {
+    let trimmed = query.trim();
+
+    // 0. ID match if query parses as integer
+    if let Ok(id) = trimmed.parse::<i64>() {
+        if let Some(song) = sqlx::query_as::<_, Song>("SELECT * FROM song WHERE song_id = ? LIMIT 1")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+        {
+            return Ok(Some(song));
+        }
+    }
+
     // 1. Exact match
     if let Some(song) = sqlx::query_as::<_, Song>("SELECT * FROM song WHERE name = ? LIMIT 1")
         .bind(query)
@@ -349,18 +401,98 @@ pub async fn find_song_by_query(pool: &SqlitePool, query: &str) -> Result<Option
 }
 
 pub async fn list_songs(pool: &SqlitePool, limit: i64) -> Result<Vec<Song>, sqlx::Error> {
-    sqlx::query_as::<_, Song>("SELECT * FROM song ORDER BY name ASC LIMIT ?")
+    sqlx::query_as::<_, Song>("SELECT * FROM song ORDER BY num_plays DESC, name ASC LIMIT ?")
         .bind(limit)
         .fetch_all(pool)
         .await
 }
 
 pub async fn search_songs(pool: &SqlitePool, query: &str) -> Result<Vec<Song>, sqlx::Error> {
-    let search = format!("%{}%", query);
-    sqlx::query_as::<_, Song>("SELECT * FROM song WHERE name LIKE ? ORDER BY name ASC LIMIT 25")
-        .bind(search)
+    let trimmed = query.trim();
+    if let Ok(id) = trimmed.parse::<i64>() {
+        let mut results = Vec::new();
+        if let Some(song) = sqlx::query_as::<_, Song>("SELECT * FROM song WHERE song_id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+        {
+            results.push(song);
+        }
+        let search = format!("%{}%", trimmed);
+        let by_name = sqlx::query_as::<_, Song>(
+            "SELECT * FROM song WHERE name LIKE ? AND song_id != ? ORDER BY num_plays DESC, name ASC LIMIT 100",
+        )
+        .bind(&search)
+        .bind(id)
         .fetch_all(pool)
-        .await
+        .await?;
+        results.extend(by_name);
+        return Ok(results);
+    }
+
+    let search = format!("%{}%", query);
+    sqlx::query_as::<_, Song>(
+        "SELECT * FROM song WHERE name LIKE ? ORDER BY num_plays DESC, name ASC LIMIT 100",
+    )
+    .bind(search)
+    .fetch_all(pool)
+    .await
+}
+
+pub fn format_songs_pages(title_prefix: &str, songs: &[Song]) -> Vec<String> {
+    if songs.is_empty() {
+        return vec![format!("No songs found for **{}**.", title_prefix)];
+    }
+
+    const PAGE_SIZE: usize = 25;
+    let total = songs.len();
+    let mut pages = Vec::new();
+
+    for (page_idx, chunk) in songs.chunks(PAGE_SIZE).enumerate() {
+        let start_rank = page_idx * PAGE_SIZE + 1;
+        let end_rank = start_rank + chunk.len() - 1;
+
+        let mut table = String::new();
+        table.push_str(&format!(
+            "{:>5} | {:>5} | {:>5} | {}\n",
+            "ID", "Plays", "Time", "Title"
+        ));
+        table.push_str("------+-------+-------+----------------------------------------\n");
+
+        for s in chunk.iter() {
+            let id = s.song_id.unwrap_or(0);
+            let plays = s.num_plays.unwrap_or(0);
+            let duration_str = match s.duration {
+                Some(d) => format!("{}:{:02}", d / 60, d % 60),
+                None => "--:--".to_string(),
+            };
+            let clip_mark = if s.is_clip.unwrap_or(0) == 1 {
+                " [Clip]"
+            } else {
+                ""
+            };
+            let raw_title = format!("{}{}", s.name, clip_mark);
+            let display_title = if raw_title.chars().count() > 40 {
+                let truncated: String = raw_title.chars().take(37).collect();
+                format!("{}...", truncated)
+            } else {
+                raw_title
+            };
+
+            table.push_str(&format!(
+                "{:>5} | {:>5} | {:>5} | {}\n",
+                id, plays, duration_str, display_title
+            ));
+        }
+
+        let page_msg = format!(
+            "🎶 **{} ({}-{} of {}):**\n```text\n{}```",
+            title_prefix, start_rank, end_rank, total, table
+        );
+        pages.push(page_msg);
+    }
+
+    pages
 }
 
 pub async fn record_song_play(pool: &SqlitePool, song_id: i64, current_plays: i32) -> Result<(), sqlx::Error> {
@@ -596,14 +728,34 @@ mod tests {
             .expect("Expected song");
         assert_eq!(s3.name, "Wow Sound Effect");
 
+        // ID match
+        let s_id = find_song_by_query(&pool, "1")
+            .await
+            .expect("ID search failed")
+            .expect("Expected song with ID 1");
+        assert_eq!(s_id.song_id, Some(1));
+        assert_eq!(s_id.name, "YOUR NEW MORNING ALARM");
+
+        let s_id2 = find_song_by_query(&pool, "2")
+            .await
+            .expect("ID search failed")
+            .expect("Expected song with ID 2");
+        assert_eq!(s_id2.song_id, Some(2));
+        assert_eq!(s_id2.name, "Wow Sound Effect");
+
         // list_songs
         let songs = list_songs(&pool, 10).await.expect("list_songs failed");
         assert!(songs.len() >= 2);
 
-        // search_songs
+        // search_songs by query
         let results = search_songs(&pool, "ALARM").await.expect("search_songs failed");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].name, "YOUR NEW MORNING ALARM");
+
+        // search_songs by ID
+        let results_id = search_songs(&pool, "1").await.expect("search_songs by ID failed");
+        assert!(!results_id.is_empty());
+        assert_eq!(results_id[0].song_id, Some(1));
     }
 
     #[tokio::test]
@@ -684,5 +836,47 @@ mod tests {
         let hash = sha256_file_to_string("audio/Wow Sound Effect.webm")
             .expect("Hashing failed");
         assert_eq!(hash, "376DC6E19339DA3D9904A34302C1FDC0723CA45A664A3F217916719F2D5C9B53");
+    }
+
+    #[test]
+    fn test_chunk_text() {
+        let text = "Line 1\nLine 2\nLine 3\nLine 4";
+        let chunks = chunk_text(text, 15);
+        assert_eq!(chunks.len(), 2);
+        assert_eq!(chunks[0], "Line 1\nLine 2");
+        assert_eq!(chunks[1], "Line 3\nLine 4");
+
+        let long_line = "a".repeat(50);
+        let chunks2 = chunk_text(&long_line, 20);
+        assert_eq!(chunks2.len(), 3);
+        assert_eq!(chunks2[0].len(), 20);
+        assert_eq!(chunks2[1].len(), 20);
+        assert_eq!(chunks2[2].len(), 10);
+    }
+
+    #[test]
+    fn test_format_songs_pages() {
+        let sample_songs: Vec<Song> = (1..=30)
+            .map(|i| Song {
+                song_id: Some(100 + i),
+                name: format!("Song Number {}", i),
+                hash_id: format!("hash{}", i),
+                duration: Some(185),
+                is_clip: Some(0),
+                num_plays: Some((100 - i) as i32),
+                last_played: Some(0),
+                url: Some("http://example.com".to_string()),
+                source: "audio/test.webm".to_string(),
+                added_by: Some("Steven".to_string()),
+            })
+            .collect();
+
+        let pages = format_songs_pages("Top Played Songs", &sample_songs);
+        assert_eq!(pages.len(), 2);
+        assert!(pages[0].contains("Top Played Songs (1-25 of 30)"));
+        assert!(pages[0].contains("   ID | Plays |  Time | Title"));
+        assert!(pages[0].contains("  101 |    99 |  3:05 | Song Number 1"));
+        assert!(pages[1].contains("Top Played Songs (26-30 of 30)"));
+        assert!(pages[1].contains("  126 |    74 |  3:05 | Song Number 26"));
     }
 }
