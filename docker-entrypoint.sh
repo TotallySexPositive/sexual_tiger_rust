@@ -14,6 +14,11 @@ elif [ -d "/usr/src/app/songs" ] && { [ ! -e "/usr/src/app/audio" ] || [ -z "$(l
     ln -s /usr/src/app/songs /usr/src/app/audio
 fi
 
+# Link /root/sexual_tiger for legacy absolute paths stored in older database revisions
+mkdir -p /root/sexual_tiger
+ln -sfn /usr/src/app/audio /root/sexual_tiger/audio
+ln -sfn /usr/src/app/songs /root/sexual_tiger/songs
+
 # Auto-update yt-dlp to stay compatible with YouTube API updates
 yt-dlp -U || true
 

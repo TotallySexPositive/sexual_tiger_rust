@@ -2,7 +2,7 @@ version: "3.8"
 
 services:
   sexualtiger:
-    image: asralis/my-sexual-tiger:latest
+    image: asralis/my-sexual-tiger:latest-rust
     build:
       context: .
       dockerfile: ./Dockerfile

@@ -51,20 +51,81 @@ pub fn get_song_directory() -> String {
 }
 
 pub fn resolve_song_path(source: &str) -> String {
-    if std::path::Path::new(source).exists() {
+    let path = std::path::Path::new(source);
+    if path.exists() {
         return source.to_string();
     }
-    if source.starts_with("songs/") {
-        let alt = source.replacen("songs/", "audio/", 1);
-        if std::path::Path::new(&alt).exists() {
-            return alt;
+
+    // 1. If source contains "/audio/" or starts with "audio/"
+    if let Some(idx) = source.find("audio/") {
+        let relative = &source[idx..]; // e.g. "audio/stored/wow.mp3-..."
+        if std::path::Path::new(relative).exists() {
+            return relative.to_string();
         }
-    } else if source.starts_with("audio/") {
-        let alt = source.replacen("audio/", "songs/", 1);
-        if std::path::Path::new(&alt).exists() {
-            return alt;
+        let songs_alt = format!("songs/{}", &source[idx + 6..]);
+        if std::path::Path::new(&songs_alt).exists() {
+            return songs_alt;
         }
     }
+
+    // 2. If source contains "/songs/" or starts with "songs/"
+    if let Some(idx) = source.find("songs/") {
+        let relative = &source[idx..]; // e.g. "songs/stored/wow.mp3-..."
+        if std::path::Path::new(relative).exists() {
+            return relative.to_string();
+        }
+        let audio_alt = format!("audio/{}", &source[idx + 6..]);
+        if std::path::Path::new(&audio_alt).exists() {
+            return audio_alt;
+        }
+    }
+
+    // 3. If source contains "/stored/" or starts with "stored/"
+    if let Some(idx) = source.find("stored/") {
+        let relative_stored = &source[idx..]; // e.g. "stored/wow.mp3-..."
+        let in_audio = format!("audio/{}", relative_stored);
+        if std::path::Path::new(&in_audio).exists() {
+            return in_audio;
+        }
+        let in_songs = format!("songs/{}", relative_stored);
+        if std::path::Path::new(&in_songs).exists() {
+            return in_songs;
+        }
+    }
+
+    // 4. Try matching by raw filename in common directories
+    if let Some(file_name_os) = path.file_name() {
+        let file_name = file_name_os.to_string_lossy();
+        let search_dirs = [
+            "audio",
+            "songs",
+            "audio/stored",
+            "songs/stored",
+            "/usr/src/app/audio",
+            "/usr/src/app/songs",
+            "/usr/src/app/audio/stored",
+            "/usr/src/app/songs/stored",
+        ];
+
+        for dir in search_dirs {
+            let candidate = format!("{}/{}", dir, file_name);
+            if std::path::Path::new(&candidate).exists() {
+                return candidate;
+            }
+        }
+
+        // 5. If filename has a hash suffix (e.g. "wow.mp3-1c463522c432a1efb89b59fa220c4d14")
+        // check if base name (without hash) exists (e.g. "wow.mp3" or "wow.webm")
+        if let Some((base, _)) = file_name.rsplit_once('-') {
+            for dir in search_dirs {
+                let candidate = format!("{}/{}", dir, base);
+                if std::path::Path::new(&candidate).exists() {
+                    return candidate;
+                }
+            }
+        }
+    }
+
     source.to_string()
 }
 
@@ -600,6 +661,14 @@ mod tests {
         // File specified as songs/ should resolve to audio/ if audio/ exists
         let res_songs = resolve_existing_song_file("songs/Wow Sound Effect.webm", "audio", Some("Wow Sound Effect"));
         assert!(res_songs.is_ok());
+
+        // Legacy absolute path containing /audio/
+        let res_legacy = resolve_song_path("/root/sexual_tiger/audio/Wow Sound Effect.webm");
+        assert_eq!(res_legacy, "audio/Wow Sound Effect.webm");
+
+        // Legacy absolute path with hash suffix matching base name
+        let res_legacy_hash = resolve_song_path("/root/sexual_tiger/audio/stored/Wow Sound Effect.webm-1c463522c432a1efb89b59fa220c4d14");
+        assert_eq!(res_legacy_hash, "audio/Wow Sound Effect.webm");
 
         // Fallback by title search
         let res_title = resolve_existing_song_file("audio/nonexistent.webm", "audio", Some("Wow Sound Effect"));
