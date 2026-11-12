@@ -1,95 +1,193 @@
-use diesel::dsl::now;
 use serenity::client::Context;
 use serenity::framework::standard::macros::command;
 use serenity::framework::standard::{Args, CommandResult};
-use serenity::model::prelude::*;
-
-use serenity::{model::channel::Message, Result as SerenityResult};
-
-// use crate::schema::song::{self, name};
+use serenity::model::channel::Message;
+use serenity::Result as SerenityResult;
+use sexual_tiger::{
+    find_song_by_query, list_songs, record_song_play, search_songs, DatabasePool,
+};
 
 #[command]
-pub async fn play(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
-    let in_url = match args.single::<String>() {
-        Ok(x) => x,
-        Err(_) => {
+pub async fn play(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
+    let in_query = match args.remains() {
+        Some(q) if !q.trim().is_empty() => q.trim().to_string(),
+        _ => {
             check_msg(
                 msg.channel_id
-                    .say(&ctx.http, "Must provide a URL to a video or audio")
+                    .say(&ctx.http, "Must provide a song name or a URL to audio/video")
                     .await,
             );
-
             return Ok(());
         }
     };
 
-    if !in_url.starts_with("http") {
-        use diesel::prelude::*;
-        use sexual_tiger::establish_connection;
-        use sexual_tiger::models::Song;
-        use sexual_tiger::schema::song::dsl::*;
-        let connection = &mut establish_connection();
-        let songs: Vec<Song> = song
-            .filter(name.like(in_url.clone() + "%"))
-            .limit(1)
-            .select(Song::as_select())
-            .load(connection)
-            .expect("Error loading songs");
-        let the_song = &songs[0];
-        println!("{:?}", &the_song);
-        use songbird::ffmpeg;
+    let guild_id = match msg.guild_id {
+        Some(id) => id,
+        None => {
+            check_msg(msg.reply(&ctx.http, "Must be in a server").await);
+            return Ok(());
+        }
+    };
 
-        // A Call is also valid here!
+    let manager = songbird::get(ctx)
+        .await
+        .expect("Songbird Voice client placed in at initialisation.")
+        .clone();
 
-        let f = ffmpeg(&the_song.source)
-            .await
-            .expect("This might fail: handle this error!");
-        // let (mut audio, audio_handle) = create_player(f);
-        // let mut handler: Driver = Default::default();
-        // audio.set_volume(0.5);
-        // handler.play_only(audio);
+    // If it's not a URL, look it up in the database
+    if !in_query.starts_with("http://") && !in_query.starts_with("https://") {
+        let pool = {
+            let data = ctx.data.read().await;
+            data.get::<DatabasePool>()
+                .cloned()
+                .expect("Expected DatabasePool in TypeMap")
+        };
 
-        let guild = msg.guild(&ctx.cache).unwrap();
-        let guild_id = guild.id;
+        let maybe_song = match find_song_by_query(&pool, &in_query).await {
+            Ok(s) => s,
+            Err(e) => {
+                check_msg(
+                    msg.channel_id
+                        .say(&ctx.http, format!("Database error: {}", e))
+                        .await,
+                );
+                return Ok(());
+            }
+        };
 
-        let manager = songbird::get(ctx)
-            .await
-            .expect("Songbird Voice client placed in at initialisation.")
-            .clone();
+        let the_song = match maybe_song {
+            Some(s) => s,
+            None => {
+                check_msg(
+                    msg.channel_id
+                        .say(
+                            &ctx.http,
+                            format!("Song not found matching: \"{}\". Use `~songs` to see available songs.", in_query),
+                        )
+                        .await,
+                );
+                return Ok(());
+            }
+        };
+
+        println!("Playing local song: {:?}", &the_song);
+
+        let input: songbird::input::Input =
+            songbird::input::File::new(the_song.source.clone()).into();
+
         if let Some(handler_lock) = manager.get(guild_id) {
             let mut handler = handler_lock.lock().await;
 
-            let track = handler.play_source(f);
-            if the_song.is_clip.unwrap().eq(&1) {
-                track.set_volume(5.0)?;
+            let track = handler.enqueue_input(input).await;
+            if the_song.is_clip.unwrap_or(0) == 1 {
+                let _ = track.set_volume(5.0);
             } else {
-                track.set_volume(1.5)?;
+                let _ = track.set_volume(1.5);
             }
+
+            let q_len = handler.queue().len();
+            if q_len > 1 {
+                check_msg(
+                    msg.channel_id
+                        .say(
+                            &ctx.http,
+                            format!("Queued **{}** (position: {})", &the_song.name, q_len),
+                        )
+                        .await,
+                );
+            } else {
+                check_msg(
+                    msg.channel_id
+                        .say(&ctx.http, format!("Playing **{}**", &the_song.name))
+                        .await,
+                );
+            }
+        } else {
             check_msg(
                 msg.channel_id
-                    .say(&ctx.http, format!("Playing song {}", &the_song.name))
+                    .say(&ctx.http, "Not in a voice channel. Use `~join` first.")
                     .await,
-            )
+            );
+            return Ok(());
         }
 
-        diesel::update(song.filter(song_id.eq(the_song.song_id)))
-            .set((
-                last_played.eq::<i32>(
-                    chrono::offset::Utc::now()
-                        .timestamp()
-                        .try_into()
-                        .expect("Shit"),
-                ),
-                num_plays.eq(the_song.num_plays.unwrap() + 1),
-            ))
-            .execute(connection)?;
+        if let Some(sid) = the_song.song_id {
+            let current_plays = the_song.num_plays.unwrap_or(0);
+            if let Err(e) = record_song_play(&pool, sid, current_plays).await {
+                println!("Error updating play count: {}", e);
+            }
+        }
         return Ok(());
     }
 
-    //     return Ok(());
+    // It's a web URL
+    if let Some(handler_lock) = manager.get(guild_id) {
+        let mut handler = handler_lock.lock().await;
 
-    let guild = msg.guild(&ctx.cache).unwrap();
-    let guild_id = guild.id;
+        let input: songbird::input::Input =
+            songbird::input::YoutubeDl::new(reqwest::Client::new(), in_query).into();
+
+        let _track = handler.enqueue_input(input).await;
+        let q_len = handler.queue().len();
+        if q_len > 1 {
+            check_msg(
+                msg.channel_id
+                    .say(&ctx.http, format!("Queued stream (position: {})", q_len))
+                    .await,
+            );
+        } else {
+            check_msg(msg.channel_id.say(&ctx.http, "Playing stream").await);
+        }
+    } else {
+        check_msg(
+            msg.channel_id
+                .say(&ctx.http, "Not in a voice channel. Use `~join` first.")
+                .await,
+        );
+    }
+    Ok(())
+}
+
+#[command]
+pub async fn skip(ctx: &Context, msg: &Message) -> CommandResult {
+    let guild_id = match msg.guild_id {
+        Some(id) => id,
+        None => {
+            check_msg(msg.reply(&ctx.http, "Must be in a server").await);
+            return Ok(());
+        }
+    };
+
+    let manager = songbird::get(ctx)
+        .await
+        .expect("Songbird Voice client placed in at initialisation.")
+        .clone();
+
+    if let Some(handler_lock) = manager.get(guild_id) {
+        let handler = handler_lock.lock().await;
+        let queue = handler.queue();
+        if queue.is_empty() {
+            check_msg(msg.channel_id.say(&ctx.http, "Queue is empty.").await);
+        } else {
+            let _ = queue.skip();
+            check_msg(msg.channel_id.say(&ctx.http, "Skipped song.").await);
+        }
+    } else {
+        check_msg(msg.reply(&ctx.http, "Not in a voice channel").await);
+    }
+
+    Ok(())
+}
+
+#[command]
+pub async fn stop(ctx: &Context, msg: &Message) -> CommandResult {
+    let guild_id = match msg.guild_id {
+        Some(id) => id,
+        None => {
+            check_msg(msg.reply(&ctx.http, "Must be in a server").await);
+            return Ok(());
+        }
+    };
 
     let manager = songbird::get(ctx)
         .await
@@ -98,46 +196,26 @@ pub async fn play(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult
 
     if let Some(handler_lock) = manager.get(guild_id) {
         let mut handler = handler_lock.lock().await;
-
-        let source = match songbird::ytdl(&in_url).await {
-            Ok(source) => source,
-            Err(why) => {
-                println!("Err starting source: {:?}", why);
-
-                check_msg(msg.channel_id.say(&ctx.http, "Error sourcing ffmpeg").await);
-
-                return Ok(());
-            }
-        };
-
-        handler.play_source(source);
-
-        check_msg(msg.channel_id.say(&ctx.http, "Playing song").await);
-    } else {
+        handler.stop();
+        handler.queue().stop();
         check_msg(
             msg.channel_id
-                .say(&ctx.http, "Not in a voice channel to play in")
+                .say(&ctx.http, "Stopped playing and cleared the queue.")
                 .await,
         );
+    } else {
+        check_msg(msg.reply(&ctx.http, "Not in a voice channel").await);
     }
+
     Ok(())
 }
 
 #[command]
-async fn join(ctx: &Context, msg: &Message) -> CommandResult {
-    let guild = msg.guild(&ctx.cache).unwrap();
-    let guild_id = guild.id;
-
-    let channel_id = guild
-        .voice_states
-        .get(&msg.author.id)
-        .and_then(|voice_state| voice_state.channel_id);
-
-    let connect_to = match channel_id {
-        Some(channel) => channel,
+pub async fn pause(ctx: &Context, msg: &Message) -> CommandResult {
+    let guild_id = match msg.guild_id {
+        Some(id) => id,
         None => {
-            check_msg(msg.reply(ctx, "Not in a voice channel").await);
-
+            check_msg(msg.reply(&ctx.http, "Must be in a server").await);
             return Ok(());
         }
     };
@@ -147,20 +225,228 @@ async fn join(ctx: &Context, msg: &Message) -> CommandResult {
         .expect("Songbird Voice client placed in at initialisation.")
         .clone();
 
-    let _handler = manager.join(guild_id, connect_to).await;
+    if let Some(handler_lock) = manager.get(guild_id) {
+        let handler = handler_lock.lock().await;
+        if let Err(e) = handler.queue().pause() {
+            check_msg(
+                msg.channel_id
+                    .say(&ctx.http, format!("Failed to pause: {:?}", e))
+                    .await,
+            );
+        } else {
+            check_msg(msg.channel_id.say(&ctx.http, "Playback paused.").await);
+        }
+    } else {
+        check_msg(msg.reply(&ctx.http, "Not in a voice channel").await);
+    }
 
     Ok(())
 }
 
 #[command]
-async fn leave(ctx: &Context, msg: &Message) -> CommandResult {
-    let guild = msg.guild(&ctx.cache).unwrap();
-    let guild_id = guild.id;
+pub async fn resume(ctx: &Context, msg: &Message) -> CommandResult {
+    let guild_id = match msg.guild_id {
+        Some(id) => id,
+        None => {
+            check_msg(msg.reply(&ctx.http, "Must be in a server").await);
+            return Ok(());
+        }
+    };
 
     let manager = songbird::get(ctx)
         .await
         .expect("Songbird Voice client placed in at initialisation.")
         .clone();
+
+    if let Some(handler_lock) = manager.get(guild_id) {
+        let handler = handler_lock.lock().await;
+        if let Err(e) = handler.queue().resume() {
+            check_msg(
+                msg.channel_id
+                    .say(&ctx.http, format!("Failed to resume: {:?}", e))
+                    .await,
+            );
+        } else {
+            check_msg(msg.channel_id.say(&ctx.http, "Playback resumed.").await);
+        }
+    } else {
+        check_msg(msg.reply(&ctx.http, "Not in a voice channel").await);
+    }
+
+    Ok(())
+}
+
+#[command]
+pub async fn queue(ctx: &Context, msg: &Message) -> CommandResult {
+    let guild_id = match msg.guild_id {
+        Some(id) => id,
+        None => {
+            check_msg(msg.reply(&ctx.http, "Must be in a server").await);
+            return Ok(());
+        }
+    };
+
+    let manager = songbird::get(ctx)
+        .await
+        .expect("Songbird Voice client placed in at initialisation.")
+        .clone();
+
+    if let Some(handler_lock) = manager.get(guild_id) {
+        let handler = handler_lock.lock().await;
+        let q_len = handler.queue().len();
+        if q_len == 0 {
+            check_msg(
+                msg.channel_id
+                    .say(&ctx.http, "The queue is currently empty.")
+                    .await,
+            );
+        } else {
+            check_msg(
+                msg.channel_id
+                    .say(
+                        &ctx.http,
+                        format!("There are **{}** song(s) in the queue.", q_len),
+                    )
+                    .await,
+            );
+        }
+    } else {
+        check_msg(msg.reply(&ctx.http, "Not in a voice channel").await);
+    }
+
+    Ok(())
+}
+
+#[command]
+pub async fn songs(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
+    let pool = {
+        let data = ctx.data.read().await;
+        data.get::<DatabasePool>()
+            .cloned()
+            .expect("Expected DatabasePool in TypeMap")
+    };
+
+    let search_query = args.remains().map(|q| q.trim()).unwrap_or("");
+
+    let song_list = if search_query.is_empty() {
+        match list_songs(&pool, 25).await {
+            Ok(s) => s,
+            Err(e) => {
+                check_msg(
+                    msg.channel_id
+                        .say(&ctx.http, format!("Database error: {}", e))
+                        .await,
+                );
+                return Ok(());
+            }
+        }
+    } else {
+        match search_songs(&pool, search_query).await {
+            Ok(s) => s,
+            Err(e) => {
+                check_msg(
+                    msg.channel_id
+                        .say(&ctx.http, format!("Database error: {}", e))
+                        .await,
+                );
+                return Ok(());
+            }
+        }
+    };
+
+    if song_list.is_empty() {
+        if search_query.is_empty() {
+            check_msg(
+                msg.channel_id
+                    .say(&ctx.http, "No songs in the database. Download some with `~download <url>`!")
+                    .await,
+            );
+        } else {
+            check_msg(
+                msg.channel_id
+                    .say(
+                        &ctx.http,
+                        format!("No songs found matching \"{}\".", search_query),
+                    )
+                    .await,
+            );
+        }
+        return Ok(());
+    }
+
+    let mut response = if search_query.is_empty() {
+        String::from("**Available Songs (first 25):**\n")
+    } else {
+        format!("**Search results for \"{}\":**\n", search_query)
+    };
+
+    for s in song_list {
+        let duration_str = match s.duration {
+            Some(d) => format!("{}:{:02}", d / 60, d % 60),
+            None => "unknown".to_string(),
+        };
+        let is_clip_str = if s.is_clip.unwrap_or(0) == 1 { " [Clip]" } else { "" };
+        response.push_str(&format!(
+            "• **{}** [{}]{} ({} plays)\n",
+            s.name,
+            duration_str,
+            is_clip_str,
+            s.num_plays.unwrap_or(0)
+        ));
+    }
+
+    check_msg(msg.channel_id.say(&ctx.http, response).await);
+    Ok(())
+}
+
+#[command]
+pub async fn join(ctx: &Context, msg: &Message) -> CommandResult {
+    let guild_id = match msg.guild_id {
+        Some(id) => id,
+        None => {
+            check_msg(msg.reply(&ctx.http, "Must be in a server").await);
+            return Ok(());
+        }
+    };
+
+    let channel_id = ctx
+        .cache
+        .guild(guild_id)
+        .and_then(|g| g.voice_states.get(&msg.author.id).and_then(|vs| vs.channel_id));
+
+    let connect_to = match channel_id {
+        Some(channel) => channel,
+        None => {
+            check_msg(msg.reply(&ctx.http, "Not in a voice channel").await);
+            return Ok(());
+        }
+    };
+
+    let manager = songbird::get(ctx)
+        .await
+        .expect("Songbird Voice client placed in at initialisation.")
+        .clone();
+
+    let _ = manager.join(guild_id, connect_to).await;
+
+    Ok(())
+}
+
+#[command]
+pub async fn leave(ctx: &Context, msg: &Message) -> CommandResult {
+    let guild_id = match msg.guild_id {
+        Some(id) => id,
+        None => {
+            check_msg(msg.reply(&ctx.http, "Must be in a server").await);
+            return Ok(());
+        }
+    };
+
+    let manager = songbird::get(ctx)
+        .await
+        .expect("Songbird Voice client placed in at initialisation.")
+        .clone();
+
     let has_handler = manager.get(guild_id).is_some();
 
     if has_handler {
@@ -174,16 +460,21 @@ async fn leave(ctx: &Context, msg: &Message) -> CommandResult {
 
         check_msg(msg.channel_id.say(&ctx.http, "Left voice channel").await);
     } else {
-        check_msg(msg.reply(ctx, "Not in a voice channel").await);
+        check_msg(msg.reply(&ctx.http, "Not in a voice channel").await);
     }
 
     Ok(())
 }
 
 #[command]
-async fn mute(ctx: &Context, msg: &Message) -> CommandResult {
-    let guild = msg.guild(&ctx.cache).unwrap();
-    let guild_id = guild.id;
+pub async fn mute(ctx: &Context, msg: &Message) -> CommandResult {
+    let guild_id = match msg.guild_id {
+        Some(id) => id,
+        None => {
+            check_msg(msg.reply(&ctx.http, "Must be in a server").await);
+            return Ok(());
+        }
+    };
 
     let manager = songbird::get(ctx)
         .await
@@ -193,8 +484,7 @@ async fn mute(ctx: &Context, msg: &Message) -> CommandResult {
     let handler_lock = match manager.get(guild_id) {
         Some(handler) => handler,
         None => {
-            check_msg(msg.reply(ctx, "Not in a voice channel").await);
-
+            check_msg(msg.reply(&ctx.http, "Not in a voice channel").await);
             return Ok(());
         }
     };
@@ -219,9 +509,14 @@ async fn mute(ctx: &Context, msg: &Message) -> CommandResult {
 }
 
 #[command]
-async fn deafen(ctx: &Context, msg: &Message) -> CommandResult {
-    let guild = msg.guild(&ctx.cache).unwrap();
-    let guild_id = guild.id;
+pub async fn deafen(ctx: &Context, msg: &Message) -> CommandResult {
+    let guild_id = match msg.guild_id {
+        Some(id) => id,
+        None => {
+            check_msg(msg.reply(&ctx.http, "Must be in a server").await);
+            return Ok(());
+        }
+    };
 
     let manager = songbird::get(ctx)
         .await
@@ -231,8 +526,7 @@ async fn deafen(ctx: &Context, msg: &Message) -> CommandResult {
     let handler_lock = match manager.get(guild_id) {
         Some(handler) => handler,
         None => {
-            check_msg(msg.reply(ctx, "Not in a voice channel").await);
-
+            check_msg(msg.reply(&ctx.http, "Not in a voice channel").await);
             return Ok(());
         }
     };
@@ -257,9 +551,14 @@ async fn deafen(ctx: &Context, msg: &Message) -> CommandResult {
 }
 
 #[command]
-async fn undeafen(ctx: &Context, msg: &Message) -> CommandResult {
-    let guild = msg.guild(&ctx.cache).unwrap();
-    let guild_id = guild.id;
+pub async fn undeafen(ctx: &Context, msg: &Message) -> CommandResult {
+    let guild_id = match msg.guild_id {
+        Some(id) => id,
+        None => {
+            check_msg(msg.reply(&ctx.http, "Must be in a server").await);
+            return Ok(());
+        }
+    };
 
     let manager = songbird::get(ctx)
         .await
@@ -289,9 +588,14 @@ async fn undeafen(ctx: &Context, msg: &Message) -> CommandResult {
 }
 
 #[command]
-async fn unmute(ctx: &Context, msg: &Message) -> CommandResult {
-    let guild = msg.guild(&ctx.cache).unwrap();
-    let guild_id = guild.id;
+pub async fn unmute(ctx: &Context, msg: &Message) -> CommandResult {
+    let guild_id = match msg.guild_id {
+        Some(id) => id,
+        None => {
+            check_msg(msg.reply(&ctx.http, "Must be in a server").await);
+            return Ok(());
+        }
+    };
 
     let manager = songbird::get(ctx)
         .await

@@ -1,64 +1,79 @@
-use self::models::*;
-use diesel::prelude::*;
-use sexual_tiger::*;
-use std::{
-    env,
-    fmt::format,
-    io::{stdin, Read},
-};
+use sexual_tiger::{download_song, insert_song, new_song, DatabasePool};
+use std::env;
 
-// fn main() {
-//     use crate::schema::song;
-//     let connection = &mut establish_connection();
-//     let new_post = NewSong {
-//         added_by: &"Steven".to_string(),
-//         duration: &1000,
-//         hash_id: &"asdfqwerzxcv".to_string(),
-//         song_id: &10001,
-//         is_clip: &0,
-//         num_plays: &0,
-//         last_played: &0,
-//         url: &"yeah no".to_string(),
-//         source: &"fuckoff".to_string(),
-//         name: &"Some dumb Song".to_string(),
-//     };
+use serenity::client::Context;
+use serenity::framework::standard::macros::command;
+use serenity::framework::standard::{Args, CommandResult};
+use serenity::{model::channel::Message, Result as SerenityResult};
 
-//     let s = diesel::insert_into(song::table)
-//         .values(&new_post)
-//         .returning(Song::as_returning())
-//         .get_result(connection)
-//         .expect("Error inserting song");
-//     println!("Song: {:?}", s)
-// }
-
-use tokio::runtime::Runtime;
-
-fn main() {
-    use crate::schema::song;
-
-    let uri = env::args()
-        .nth(1)
-        .expect("add_song requires a uri")
-        .parse::<String>()
-        .expect("Invalid uri");
-
-    let rt = Runtime::new().unwrap();
-    let connection = &mut establish_connection();
+#[command]
+pub async fn download(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
+    let uri = match args.single::<String>() {
+        Ok(x) => x,
+        Err(_) => {
+            check_msg(
+                msg.channel_id
+                    .say(&ctx.http, "Must provide a URL to video or audio")
+                    .await,
+            );
+            return Ok(());
+        }
+    };
 
     let song_dir = env::var("SONG_DIRECTORY").expect("SONG_DIRECTORY must be set");
 
-    let meta = rt
-        .block_on(download_song(uri))
-        .expect("Couldn't download the song");
+    let pool = {
+        let data = ctx.data.read().await;
+        data.get::<DatabasePool>()
+            .cloned()
+            .expect("Expected DatabasePool in TypeMap")
+    };
 
-    let s = diesel::insert_into(song::table)
-        .values(&new_song(
-            meta.clone(),
-            "Steven".to_string(),
-            format!("{}{}.webm", &song_dir, &meta.title.as_ref().unwrap()),
-        ))
-        .returning(Song::as_returning())
-        .get_result(connection)
-        .expect("Error inserting song");
-    println!("Song: {:?}", s)
+    check_msg(
+        msg.channel_id
+            .say(&ctx.http, "Downloading audio, please wait...")
+            .await,
+    );
+
+    let meta = match download_song(uri).await {
+        Ok(m) => m,
+        Err(e) => {
+            check_msg(
+                msg.channel_id
+                    .say(&ctx.http, format!("Failed to download song: {}", e))
+                    .await,
+            );
+            return Ok(());
+        }
+    };
+
+    let title = meta.title.clone().unwrap_or_else(|| "Unknown".to_string());
+    let source_path = format!("{}/{}.webm", song_dir.trim_end_matches('/'), &title);
+    let new_s = new_song(&meta, msg.author.name.clone(), source_path);
+
+    match insert_song(&pool, &new_s).await {
+        Ok(s) => {
+            check_msg(
+                msg.channel_id
+                    .say(&ctx.http, format!("Successfully added song: {}", s.name))
+                    .await,
+            );
+        }
+        Err(e) => {
+            check_msg(
+                msg.channel_id
+                    .say(&ctx.http, format!("Error saving song to database: {}", e))
+                    .await,
+            );
+        }
+    }
+
+    Ok(())
+}
+
+/// Checks that a message successfully sent; if not, then logs why to stdout.
+fn check_msg(result: SerenityResult<Message>) {
+    if let Err(why) = result {
+        println!("Error sending message: {:?}", why);
+    }
 }

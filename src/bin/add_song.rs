@@ -1,64 +1,26 @@
-use self::models::*;
-use diesel::prelude::*;
 use sexual_tiger::*;
-use std::{
-    env,
-    fmt::format,
-    io::{stdin, Read},
-};
+use std::env;
 
-// fn main() {
-//     use crate::schema::song;
-//     let connection = &mut establish_connection();
-//     let new_post = NewSong {
-//         added_by: &"Steven".to_string(),
-//         duration: &1000,
-//         hash_id: &"asdfqwerzxcv".to_string(),
-//         song_id: &10001,
-//         is_clip: &0,
-//         num_plays: &0,
-//         last_played: &0,
-//         url: &"yeah no".to_string(),
-//         source: &"fuckoff".to_string(),
-//         name: &"Some dumb Song".to_string(),
-//     };
-
-//     let s = diesel::insert_into(song::table)
-//         .values(&new_post)
-//         .returning(Song::as_returning())
-//         .get_result(connection)
-//         .expect("Error inserting song");
-//     println!("Song: {:?}", s)
-// }
-
-use tokio::runtime::Runtime;
-
-fn main() {
-    use crate::schema::song;
-
+#[tokio::main]
+async fn main() {
     let uri = env::args()
         .nth(1)
-        .expect("add_song requires a uri")
-        .parse::<String>()
-        .expect("Invalid uri");
+        .expect("add_song requires a uri argument");
 
-    let rt = Runtime::new().unwrap();
-    let connection = &mut establish_connection();
-
+    let pool = establish_connection_pool().await;
     let song_dir = env::var("SONG_DIRECTORY").expect("SONG_DIRECTORY must be set");
 
-    let meta = rt
-        .block_on(download_song(uri))
+    let meta = download_song(uri)
+        .await
         .expect("Couldn't download the song");
 
-    let s = diesel::insert_into(song::table)
-        .values(&new_song(
-            meta.clone(),
-            "Steven".to_string(),
-            format!("{}{}.webm", &song_dir, &meta.title.as_ref().unwrap()),
-        ))
-        .returning(Song::as_returning())
-        .get_result(connection)
-        .expect("Error inserting song");
-    println!("Song: {:?}", s)
+    let title = meta.title.clone().unwrap_or_else(|| "Unknown".to_string());
+    let source_path = format!("{}/{}.webm", song_dir.trim_end_matches('/'), &title);
+    let new_s = new_song(&meta, "Steven".to_string(), source_path);
+
+    let song = insert_song(&pool, &new_s)
+        .await
+        .expect("Error inserting song into database");
+
+    println!("Successfully inserted song: {:?}", song);
 }
