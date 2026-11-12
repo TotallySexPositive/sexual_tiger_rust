@@ -58,18 +58,36 @@ pub async fn gif(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
     }
 
     let query = args.rest();
+    match fetch_random_gif(api_key, query).await {
+        Ok(url) => {
+            msg.reply(ctx, url).await?;
+        }
+        Err(e) => {
+            msg.reply(ctx, format!("Error fetching gif: {}", e)).await?;
+        }
+    }
+    Ok(())
+}
+
+pub async fn fetch_random_gif(api_key: &str, query: &str) -> Result<String, String> {
+    if api_key.is_empty() {
+        return Err("Giphy token is not configured.".to_string());
+    }
     let res = reqwest::get(&format!(
         "https://api.giphy.com/v1/gifs/random?api_key={}&tag={}&rating=r",
         api_key, query
     ))
     .await
-    .unwrap();
-    let body = res.text().await.unwrap();
-    let payload = serde_json::from_str::<GiphyPayload>(&body)?;
-    let embed_url = payload
+    .map_err(|e| format!("Failed to reach Giphy: {}", e))?;
+
+    let body = res
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read Giphy response: {}", e))?;
+    let payload = serde_json::from_str::<GiphyPayload>(&body)
+        .map_err(|e| format!("Failed to parse Giphy json: {}", e))?;
+    payload
         .data
         .embed_url
-        .expect("payload should have embed url");
-    msg.reply(ctx, embed_url).await?;
-    Ok(())
+        .ok_or_else(|| "Giphy response had no embed url".to_string())
 }

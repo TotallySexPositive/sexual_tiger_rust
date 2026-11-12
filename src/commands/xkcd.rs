@@ -140,3 +140,20 @@ pub async fn xkcd(ctx: &Context, msg: &Message, _: Args) -> CommandResult {
 
     Ok(())
 }
+
+pub async fn get_random_xkcd() -> Result<CreateEmbed, String> {
+    let latest = reqwest::get("https://xkcd.com/info.0.json")
+        .await
+        .map_err(|e| format!("Failed to reach xkcd: {}", e))?;
+    let body = latest
+        .text()
+        .await
+        .map_err(|e| format!("Failed to read xkcd response: {}", e))?;
+    let payload: XkcdPayload =
+        serde_json::from_str(&body).map_err(|e| format!("Failed to parse xkcd: {}", e))?;
+    let max = payload.num;
+    let num = rand::thread_rng().gen_range(1..max);
+    comic_content(num)
+        .await
+        .map_err(|e| format!("Failed to load comic: {:?}", e))
+}

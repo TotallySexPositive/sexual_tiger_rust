@@ -7,9 +7,8 @@ use songbird::input::metadata::YoutubeDlOutput;
 use songbird::input::AuxMetadata;
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool, SqlitePoolOptions};
 use std::{
-    env,
-    fs,
-    process::{Command, Stdio},
+    env, fs,
+    process::Stdio,
     str::FromStr,
 };
 use tokio::process::Command as TokioCommand;
@@ -70,12 +69,21 @@ pub fn resolve_song_path(source: &str) -> String {
 }
 
 pub fn clean_youtube_url(url: &str) -> String {
-    if (url.contains("youtube.com/watch") || url.contains("m.youtube.com/watch")) && url.contains("&list=") {
-        if let Some(v_idx) = url.find("v=") {
-            let after_v = &url[v_idx + 2..];
-            let video_id = after_v.split('&').next().unwrap_or(after_v);
-            if !video_id.is_empty() {
-                return format!("https://www.youtube.com/watch?v={}", video_id);
+    if url.contains("youtube.com/watch") || url.contains("m.youtube.com/watch") {
+        if url.contains("list=") {
+            let mut video_id = None;
+            if let Some(idx) = url.find("?v=") {
+                let rest = &url[idx + 3..];
+                video_id = Some(rest.split('&').next().unwrap_or(rest));
+            } else if let Some(idx) = url.find("&v=") {
+                let rest = &url[idx + 3..];
+                video_id = Some(rest.split('&').next().unwrap_or(rest));
+            }
+
+            if let Some(vid) = video_id {
+                if !vid.is_empty() {
+                    return format!("https://www.youtube.com/watch?v={}", vid);
+                }
             }
         }
     } else if url.contains("youtu.be/") && url.contains('?') {
@@ -85,82 +93,137 @@ pub fn clean_youtube_url(url: &str) -> String {
     url.to_string()
 }
 
-pub async fn download_song(uri: String) -> Result<AuxMetadata, String> {
-    let song_dir = get_song_directory();
-    let _dir = fs::create_dir_all(&song_dir).map_err(|e| format!("Couldn't create SONG_DIRECTORY: {}", e))?;
-    let target_uri = clean_youtube_url(&uri);
-
-    let ytdl_args = [
-        "--print-json",
-        "-f",
-        "webm[abr>0]/bestaudio/best",
-        "-R",
-        "infinite",
-        "--no-playlist",
-        "--ignore-config",
-        "--no-warnings",
-        &target_uri,
-        "-o",
-        &format!("{}/%(title)s.%(ext)s", &song_dir),
-    ];
-
-    match Command::new("yt-dlp")
-        .args(&ytdl_args)
-        .stdin(Stdio::null())
-        .stderr(Stdio::piped())
-        .stdout(Stdio::piped())
-        .spawn()
-    {
-        Ok(_) => _ytdl_metadata(&target_uri).await,
-        Err(x) => Err(format!("Something went wrong with yt-dlp: {}", x)),
+pub fn resolve_existing_song_file(
+    candidate: &str,
+    song_dir: &str,
+    title: Option<&str>,
+) -> Result<String, String> {
+    // 1. Direct or path-resolved candidate
+    let resolved = resolve_song_path(candidate);
+    if std::path::Path::new(&resolved).is_file() {
+        return Ok(candidate.to_string());
     }
+
+    // 2. Relative to song_dir if candidate had a different path prefix
+    if let Some(file_name) = std::path::Path::new(candidate).file_name().and_then(|f| f.to_str()) {
+        let in_song_dir = format!("{}/{}", song_dir.trim_end_matches('/'), file_name);
+        let resolved_in_song = resolve_song_path(&in_song_dir);
+        if std::path::Path::new(&resolved_in_song).is_file() {
+            return Ok(in_song_dir);
+        }
+    }
+
+    // 3. Search song_dir, songs, or audio for matching file names
+    let candidate_dirs = [song_dir, "songs", "audio"];
+    for dir in candidate_dirs {
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+                    if let Some(t) = title {
+                        if !t.is_empty()
+                            && (file_name.starts_with(t)
+                                || file_name.contains(t)
+                                || t.contains(file_name.as_ref()))
+                        {
+                            return Ok(format!("{}/{}", dir.trim_end_matches('/'), file_name));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Err(format!(
+        "Could not open file {}: No such file or directory (os error 2)",
+        candidate
+    ))
 }
 
-async fn _ytdl_metadata(uri: &str) -> Result<AuxMetadata, String> {
+#[derive(Debug, Clone)]
+pub struct DownloadResult {
+    pub metadata: AuxMetadata,
+    pub source_path: String,
+}
+
+pub async fn download_song(uri: String) -> Result<DownloadResult, String> {
+    let song_dir = get_song_directory();
+    fs::create_dir_all(&song_dir)
+        .map_err(|e| format!("Couldn't create SONG_DIRECTORY: {}", e))?;
+    let target_uri = clean_youtube_url(&uri);
+
+    let output_template = format!("{}/%(title)s.%(ext)s", song_dir.trim_end_matches('/'));
+
     let ytdl_args = [
-        "-j",
+        "--no-simulate",
+        "--dump-json",
         "-f",
         "webm[abr>0]/bestaudio/best",
-        "-R",
-        "infinite",
         "--no-playlist",
         "--ignore-config",
         "--no-warnings",
-        uri,
         "-o",
-        "-",
+        &output_template,
+        &target_uri,
     ];
 
-    let youtube_dl_output = TokioCommand::new("yt-dlp")
+    let output = TokioCommand::new("yt-dlp")
         .args(&ytdl_args)
         .stdin(Stdio::null())
         .output()
         .await
-        .map_err(|x| format!("Couldn't get the metadata: {}", x))?;
+        .map_err(|e| format!("Failed to run yt-dlp: {}", e))?;
 
-    let o_vec = youtube_dl_output.stderr;
+    if !output.status.success() {
+        let err = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("yt-dlp failed: {}", err.trim()));
+    }
 
-    let end = (&o_vec)
-        .iter()
-        .position(|el| *el == 0xA)
-        .unwrap_or_else(|| o_vec.len());
+    let stdout_str = String::from_utf8_lossy(&output.stdout);
+    let json_line = stdout_str
+        .lines()
+        .find(|line| line.starts_with('{'))
+        .ok_or_else(|| "yt-dlp did not return metadata JSON".to_string())?;
 
-    let output: YoutubeDlOutput = serde_json::from_slice(&o_vec[..end])
-        .map_err(|e| format!("Couldn't parse metadata json: {}", e))?;
+    let json_val: serde_json::Value = serde_json::from_str(json_line)
+        .map_err(|e| format!("Failed to parse metadata JSON: {}", e))?;
 
-    Ok(output.as_aux_metadata())
+    let ytdl_output: YoutubeDlOutput = serde_json::from_value(json_val.clone())
+        .map_err(|e| format!("Failed to deserialize YoutubeDlOutput: {}", e))?;
+
+    let candidate_filename = json_val
+        .get("_filename")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| {
+            let title = ytdl_output.title.clone().unwrap_or_else(|| "Unknown".to_string());
+            format!("{}/{}.webm", song_dir.trim_end_matches('/'), title)
+        });
+
+    let actual_filename = resolve_existing_song_file(
+        &candidate_filename,
+        &song_dir,
+        ytdl_output.title.as_deref(),
+    )?;
+
+    Ok(DownloadResult {
+        metadata: ytdl_output.as_aux_metadata(),
+        source_path: actual_filename,
+    })
 }
 
-pub fn new_song(meta: &AuxMetadata, added_by: String, source: String) -> NewSong {
+pub fn new_song(meta: &AuxMetadata, added_by: String, source: String) -> Result<NewSong, String> {
     let duration: i32 = match meta.duration {
         Some(d) => d.as_secs().try_into().unwrap_or(0),
         None => 0,
     };
     let is_clip = if duration < 10 { 1 } else { 0 };
+    let hash_id = sha256_file_to_string(&source)?;
 
-    NewSong {
+    Ok(NewSong {
         name: meta.title.clone().unwrap_or_else(|| "Unknown".to_string()),
-        hash_id: sha256_file_to_string(&source),
+        hash_id,
         duration,
         is_clip,
         num_plays: 0,
@@ -168,7 +231,7 @@ pub fn new_song(meta: &AuxMetadata, added_by: String, source: String) -> NewSong
         url: meta.source_url.clone(),
         source,
         added_by: Some(added_by),
-    }
+    })
 }
 
 pub async fn insert_song(pool: &SqlitePool, song: &NewSong) -> Result<Song, sqlx::Error> {
@@ -347,11 +410,13 @@ fn sha256_digest<R: Read>(mut reader: R) -> Result<Digest, String> {
     Ok(context.finish())
 }
 
-pub fn sha256_file_to_string(path: &str) -> String {
-    let input = File::open(path).unwrap_or_else(|e| panic!("Could not open file {}: {}", path, e));
+pub fn sha256_file_to_string(path: &str) -> Result<String, String> {
+    let resolved = resolve_song_path(path);
+    let input = File::open(&resolved)
+        .map_err(|e| format!("Could not open file {}: {}", resolved, e))?;
     let reader = BufReader::new(input);
-    let digest = sha256_digest(reader).expect("Failed to digest file");
-    HEXUPPER.encode(digest.as_ref())
+    let digest = sha256_digest(reader).map_err(|e| format!("Failed to digest file: {}", e))?;
+    Ok(HEXUPPER.encode(digest.as_ref()))
 }
 
 #[cfg(test)]
@@ -504,6 +569,12 @@ mod tests {
             "https://www.youtube.com/watch?v=-J7J_IWUhls"
         );
 
+        let list_first = "https://www.youtube.com/watch?list=PL123&v=abc12345&index=2";
+        assert_eq!(
+            clean_youtube_url(list_first),
+            "https://www.youtube.com/watch?v=abc12345"
+        );
+
         let mobile = "https://m.youtube.com/watch?v=abc12345&list=PL123&index=2";
         assert_eq!(
             clean_youtube_url(mobile),
@@ -518,5 +589,31 @@ mod tests {
 
         let clean = "https://www.youtube.com/watch?v=-J7J_IWUhls";
         assert_eq!(clean_youtube_url(clean), clean);
+    }
+
+    #[test]
+    fn test_resolve_existing_song_file() {
+        // Direct existing file in audio/
+        let res = resolve_existing_song_file("audio/Wow Sound Effect.webm", "audio", Some("Wow Sound Effect"));
+        assert!(res.is_ok());
+
+        // File specified as songs/ should resolve to audio/ if audio/ exists
+        let res_songs = resolve_existing_song_file("songs/Wow Sound Effect.webm", "audio", Some("Wow Sound Effect"));
+        assert!(res_songs.is_ok());
+
+        // Fallback by title search
+        let res_title = resolve_existing_song_file("audio/nonexistent.webm", "audio", Some("Wow Sound Effect"));
+        assert!(res_title.is_ok());
+
+        // Truly missing file returns error
+        let res_missing = resolve_existing_song_file("audio/missing_test_file_xyz.webm", "audio", Some("DefinitelyNotExisting12345"));
+        assert!(res_missing.is_err());
+    }
+
+    #[test]
+    fn test_sha256_file_to_string() {
+        let hash = sha256_file_to_string("audio/Wow Sound Effect.webm")
+            .expect("Hashing failed");
+        assert_eq!(hash, "376DC6E19339DA3D9904A34302C1FDC0723CA45A664A3F217916719F2D5C9B53");
     }
 }

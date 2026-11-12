@@ -19,8 +19,6 @@ pub async fn download(ctx: &Context, msg: &Message, mut args: Args) -> CommandRe
         }
     };
 
-    let song_dir = sexual_tiger::get_song_directory();
-
     let pool = {
         let data = ctx.data.read().await;
         data.get::<DatabasePool>()
@@ -34,8 +32,8 @@ pub async fn download(ctx: &Context, msg: &Message, mut args: Args) -> CommandRe
             .await,
     );
 
-    let meta = match download_song(uri).await {
-        Ok(m) => m,
+    let downloaded = match download_song(uri).await {
+        Ok(d) => d,
         Err(e) => {
             check_msg(
                 msg.channel_id
@@ -46,9 +44,17 @@ pub async fn download(ctx: &Context, msg: &Message, mut args: Args) -> CommandRe
         }
     };
 
-    let title = meta.title.clone().unwrap_or_else(|| "Unknown".to_string());
-    let source_path = format!("{}/{}.webm", song_dir.trim_end_matches('/'), &title);
-    let new_s = new_song(&meta, msg.author.name.clone(), source_path);
+    let new_s = match new_song(&downloaded.metadata, msg.author.name.clone(), downloaded.source_path) {
+        Ok(s) => s,
+        Err(e) => {
+            check_msg(
+                msg.channel_id
+                    .say(&ctx.http, format!("Failed to process downloaded song: {}", e))
+                    .await,
+            );
+            return Ok(());
+        }
+    };
 
     match insert_song(&pool, &new_s).await {
         Ok(s) => {
@@ -59,9 +65,15 @@ pub async fn download(ctx: &Context, msg: &Message, mut args: Args) -> CommandRe
             );
         }
         Err(e) => {
+            let err_str = e.to_string();
+            let msg_text = if err_str.contains("UNIQUE constraint failed") {
+                format!("Song **{}** is already in the library!", new_s.name)
+            } else {
+                format!("Error saving song to database: {}", e)
+            };
             check_msg(
                 msg.channel_id
-                    .say(&ctx.http, format!("Error saving song to database: {}", e))
+                    .say(&ctx.http, msg_text)
                     .await,
             );
         }

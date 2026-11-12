@@ -8,15 +8,13 @@ async fn main() {
         .expect("add_song requires a uri argument");
 
     let pool = establish_connection_pool().await;
-    let song_dir = get_song_directory();
 
-    let meta = download_song(uri)
+    let downloaded = download_song(uri)
         .await
         .expect("Couldn't download the song");
 
-    let title = meta.title.clone().unwrap_or_else(|| "Unknown".to_string());
-    let source_path = format!("{}/{}.webm", song_dir.trim_end_matches('/'), &title);
-    let new_s = new_song(&meta, "Steven".to_string(), source_path);
+    let new_s = new_song(&downloaded.metadata, "Steven".to_string(), downloaded.source_path)
+        .expect("Failed to process downloaded song");
 
     let song = insert_song(&pool, &new_s)
         .await

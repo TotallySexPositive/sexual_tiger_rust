@@ -2,13 +2,16 @@
 
 mod commands;
 mod myauth;
+mod slash;
 
 use crate::commands::download::*;
 use crate::commands::fuckoff::*;
 use crate::commands::gif::*;
+use crate::commands::help::*;
 use crate::commands::ping::*;
 use crate::commands::play::*;
 use crate::commands::playlist::*;
+use crate::commands::volume::*;
 use crate::commands::xkcd::*;
 use myauth::AuthData;
 use sexual_tiger::{establish_connection_pool, DatabasePool};
@@ -17,16 +20,22 @@ use serenity::async_trait;
 use serenity::framework::standard::macros::group;
 use serenity::framework::standard::Configuration;
 use serenity::framework::standard::StandardFramework;
+use serenity::model::application::{Command, Interaction};
+use serenity::model::gateway::Ready;
 use serenity::prelude::*;
 
 use songbird::SerenityInit;
 
 #[group]
 #[commands(
+    help,
     ping,
     gif,
     xkcd,
     play,
+    volume,
+    vup,
+    vdown,
     skip,
     stop,
     pause,
@@ -49,7 +58,30 @@ struct General;
 struct Handler;
 
 #[async_trait]
-impl EventHandler for Handler {}
+impl EventHandler for Handler {
+    async fn ready(&self, ctx: Context, ready: Ready) {
+        println!("{} is connected!", ready.user.name);
+
+        let slash_cmds = slash::create_slash_commands();
+        match Command::set_global_commands(&ctx.http, slash_cmds).await {
+            Ok(cmds) => {
+                println!(
+                    "Successfully registered {} global slash commands with Discord!",
+                    cmds.len()
+                );
+            }
+            Err(why) => {
+                eprintln!("Failed to register global slash commands: {:?}", why);
+            }
+        }
+    }
+
+    async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
+        if let Interaction::Command(command) = interaction {
+            slash::handle_slash_command(&ctx, &command).await;
+        }
+    }
+}
 
 #[tokio::main]
 async fn main() {
