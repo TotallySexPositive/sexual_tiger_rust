@@ -80,6 +80,7 @@ Sexual Tiger supports **both** classic prefix commands (`~`) and modern native D
 | Prefix Command | Slash Command | Arguments | Description | Example |
 |---|---|---|---|---|
 | `~play` | `/play` | `query: <name \| ID# \| url>` | Searches database by ID #, exact title, prefix, or substring; or streams live audio from YouTube | `~play 1`<br>`~play wow`<br>`/play query:https://youtu.be/...` |
+| `~wii` | `/wii` | — | Plays an anxiety-inducing cursed Wii/Mii theme song at random (autojoins voice) | `~wii`<br>`~mii`<br>`/wii` |
 | `~download` | `/download` | `url: <url>` | Downloads audio via `yt-dlp`, computes SHA-256 hash, and inserts into library | `~download https://youtu.be/...`<br>`/download url:https://youtu.be/...` |
 | `~skip` | `/skip` | — | Skips the currently playing track | `~skip`<br>`/skip` |
 | `~stop` | `/stop` | — | Stops audio playback and clears the entire queue | `~stop`<br>`/stop` |

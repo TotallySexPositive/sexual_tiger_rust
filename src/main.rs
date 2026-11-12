@@ -53,7 +53,8 @@ use songbird::SerenityInit;
     playlist,
     playplaylist,
     shuffleplaylist,
-    shuffle
+    shuffle,
+    wii
 )]
 struct General;
 

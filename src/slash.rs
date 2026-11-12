@@ -296,6 +296,8 @@ pub fn create_slash_commands() -> Vec<CreateCommand> {
                 )
                 .required(true),
             ),
+        // /wii
+        CreateCommand::new("wii").description("Plays an anxiety-inducing cursed Wii / Mii theme song at random"),
         // /xkcd
         CreateCommand::new("xkcd").description("Display a random XKCD comic"),
     ]
@@ -384,6 +386,9 @@ pub async fn handle_slash_command(ctx: &Context, command: &CommandInteraction) {
         "shuffle" => {
             let playlist_opt = get_opt_str(&command.data.options, "playlist");
             handle_slash_shuffle(ctx, command, guild_id, &pool, playlist_opt).await;
+        }
+        "wii" => {
+            handle_wii(ctx, command, guild_id, &pool).await;
         }
         "songs" => {
             let query = get_opt_str(&command.data.options, "query");
@@ -558,6 +563,88 @@ async fn handle_play(
         format!("Queued **{}**{} (position: {})", song.name, id_info, q_len)
     } else {
         format!("Playing **{}**{} 🎶", song.name, id_info)
+    };
+
+    if let Some(sid) = song.song_id {
+        let plays = song.num_plays.unwrap_or(0);
+        let _ = record_song_play(pool, sid, plays).await;
+    }
+
+    let edit = EditInteractionResponse::new().content(msg);
+    let _ = command.edit_response(&ctx.http, edit).await;
+}
+
+async fn handle_wii(
+    ctx: &Context,
+    command: &CommandInteraction,
+    guild_id: GuildId,
+    pool: &sqlx::SqlitePool,
+) {
+    if let Err(e) = ensure_voice_connection(ctx, command, guild_id).await {
+        let edit = EditInteractionResponse::new().content(e);
+        let _ = command.edit_response(&ctx.http, edit).await;
+        return;
+    }
+
+    let manager = songbird::get(ctx).await.unwrap().clone();
+    let handler_lock = match manager.get(guild_id) {
+        Some(h) => h,
+        None => {
+            let edit = EditInteractionResponse::new().content("Failed to connect to voice channel.");
+            let _ = command.edit_response(&ctx.http, edit).await;
+            return;
+        }
+    };
+
+    let chosen_id = {
+        use rand::seq::SliceRandom;
+        let mut rng = rand::thread_rng();
+        *crate::commands::play::WII_SONG_IDS.choose(&mut rng).expect("WII_SONG_IDS is non-empty")
+    };
+
+    let maybe_song = match find_song_by_query(pool, &chosen_id.to_string()).await {
+        Ok(s) => s,
+        Err(e) => {
+            let edit = EditInteractionResponse::new().content(format!("Database error: {}", e));
+            let _ = command.edit_response(&ctx.http, edit).await;
+            return;
+        }
+    };
+
+    let song = match maybe_song {
+        Some(s) => s,
+        None => {
+            let edit = EditInteractionResponse::new().content(format!(
+                "Wii song ID **{}** not found in database.",
+                chosen_id
+            ));
+            let _ = command.edit_response(&ctx.http, edit).await;
+            return;
+        }
+    };
+
+    let resolved_source = resolve_song_path(&song.source);
+    let input: songbird::input::Input = songbird::input::File::new(resolved_source).into();
+
+    let mut handler = handler_lock.lock().await;
+    let track = handler.enqueue_input(input).await;
+    let _ = track.add_event(Event::Track(TrackEvent::Error), SlashTrackErrorNotifier);
+
+    if song.is_clip.unwrap_or(0) == 1 {
+        let _ = track.set_volume(5.0);
+    } else {
+        let _ = track.set_volume(1.5);
+    }
+
+    let q_len = handler.queue().len();
+    let id_info = song
+        .song_id
+        .map(|id| format!(" (ID: {})", id))
+        .unwrap_or_default();
+    let msg = if q_len > 1 {
+        format!("Queued **{}**{} (position: {}) 🎮", song.name, id_info, q_len)
+    } else {
+        format!("Playing **{}**{} 🎮", song.name, id_info)
     };
 
     if let Some(sid) = song.song_id {
@@ -1416,7 +1503,7 @@ mod tests {
     #[test]
     fn test_create_slash_commands() {
         let commands = create_slash_commands();
-        assert_eq!(commands.len(), 24);
+        assert_eq!(commands.len(), 25);
 
         // Check specific command names exist
         let names: Vec<String> = commands
@@ -1428,6 +1515,7 @@ mod tests {
             .collect();
 
         assert!(names.contains(&"play".to_string()));
+        assert!(names.contains(&"wii".to_string()));
         assert!(names.contains(&"volume".to_string()));
         assert!(names.contains(&"vup".to_string()));
         assert!(names.contains(&"vdown".to_string()));

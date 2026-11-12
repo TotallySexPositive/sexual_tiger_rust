@@ -39,6 +39,7 @@ pub fn get_general_help_embed() -> CreateEmbed {
         .field(
             "🎵 Music & Playback",
             "• `play <name | ID# | url>` — Play library song by name/ID, or stream YouTube URL\n\
+             • `wii` (or `mii`) — Play a random anxiety-inducing Wii/Mii theme\n\
              • `download <url>` — Download audio to local library and database\n\
              • `skip` — Skip to the next song in the queue\n\
              • `stop` — Stop audio playback and clear the queue\n\
@@ -98,6 +99,13 @@ pub fn get_command_help_embed(cmd: &str) -> Result<CreateEmbed, String> {
             "• `~play <song name | ID#>`\n• `~play <youtube url>`\n• `/play query:<song | ID# | url>`",
             "`p` (prefix only)",
             "• `~play wow`\n• `~play 1` (plays song ID 1)\n• `/play query:https://www.youtube.com/watch?v=dQw4w9WgXcQ`",
+        ),
+        "wii" | "mii" => (
+            "Command: wii",
+            "Plays a cursed, anxiety-inducing Wii / Mii theme song selected at random from the classic library (IDs: 2058, 2059, 2117, 2328, 2329, 2331, 2332, 2333, 2334). Automatically joins your voice channel.",
+            "• `~wii`\n• `~mii`\n• `/wii`",
+            "`mii`",
+            "• `~wii`\n• `/wii`",
         ),
         "download" | "dl" => (
             "Command: download",

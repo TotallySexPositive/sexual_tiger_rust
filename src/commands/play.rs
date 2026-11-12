@@ -94,63 +94,7 @@ pub async fn play(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
             }
         };
 
-        println!("Playing local song: {:?}", the_song);
-
-        let resolved_source = sexual_tiger::resolve_song_path(&the_song.source);
-        if !std::path::Path::new(&resolved_source).exists() {
-            check_msg(
-                msg.channel_id
-                    .say(
-                        &ctx.http,
-                        format!("Warning: Audio file not found on disk at `{}`. Please check mounted audio volume.", resolved_source),
-                    )
-                    .await,
-            );
-        }
-
-        let input: songbird::input::Input =
-            songbird::input::File::new(resolved_source).into();
-
-        {
-            let mut handler = handler_lock.lock().await;
-
-            let track = handler.enqueue_input(input).await;
-            let _ = track.add_event(Event::Track(TrackEvent::Error), TrackErrorNotifier);
-            if the_song.is_clip.unwrap_or(0) == 1 {
-                let _ = track.set_volume(5.0);
-            } else {
-                let _ = track.set_volume(1.5);
-            }
-
-            let q_len = handler.queue().len();
-            let id_info = the_song
-                .song_id
-                .map(|id| format!(" (ID: {})", id))
-                .unwrap_or_default();
-            if q_len > 1 {
-                check_msg(
-                    msg.channel_id
-                        .say(
-                            &ctx.http,
-                            format!("Queued **{}**{} (position: {})", the_song.name, id_info, q_len),
-                        )
-                        .await,
-                );
-            } else {
-                check_msg(
-                    msg.channel_id
-                        .say(&ctx.http, format!("Playing **{}**{}", the_song.name, id_info))
-                        .await,
-                );
-            }
-        }
-
-        if let Some(sid) = the_song.song_id {
-            let current_plays = the_song.num_plays.unwrap_or(0);
-            if let Err(e) = record_song_play(&pool, sid, current_plays).await {
-                println!("Error updating play count: {}", e);
-            }
-        }
+        play_song_struct(ctx, msg.channel_id, &handler_lock, &pool, &the_song).await;
         return Ok(());
     }
 
@@ -642,9 +586,161 @@ pub async fn unmute(ctx: &Context, msg: &Message) -> CommandResult {
     Ok(())
 }
 
+pub const WII_SONG_IDS: &[i64] = &[2058, 2059, 2117, 2328, 2329, 2331, 2332, 2333, 2334];
+
+pub async fn play_song_struct(
+    ctx: &Context,
+    channel_id: serenity::model::id::ChannelId,
+    handler_lock: &std::sync::Arc<tokio::sync::Mutex<songbird::Call>>,
+    pool: &sqlx::SqlitePool,
+    the_song: &sexual_tiger::models::Song,
+) {
+    println!("Playing local song: {:?}", the_song);
+
+    let resolved_source = sexual_tiger::resolve_song_path(&the_song.source);
+    if !std::path::Path::new(&resolved_source).exists() {
+        check_msg(
+            channel_id
+                .say(
+                    &ctx.http,
+                    format!("Warning: Audio file not found on disk at `{}`. Please check mounted audio volume.", resolved_source),
+                )
+                .await,
+        );
+    }
+
+    let input: songbird::input::Input =
+        songbird::input::File::new(resolved_source).into();
+
+    {
+        let mut handler = handler_lock.lock().await;
+
+        let track = handler.enqueue_input(input).await;
+        let _ = track.add_event(Event::Track(TrackEvent::Error), TrackErrorNotifier);
+        if the_song.is_clip.unwrap_or(0) == 1 {
+            let _ = track.set_volume(5.0);
+        } else {
+            let _ = track.set_volume(1.5);
+        }
+
+        let q_len = handler.queue().len();
+        let id_info = the_song
+            .song_id
+            .map(|id| format!(" (ID: {})", id))
+            .unwrap_or_default();
+        if q_len > 1 {
+            check_msg(
+                channel_id
+                    .say(
+                        &ctx.http,
+                        format!("Queued **{}**{} (position: {})", the_song.name, id_info, q_len),
+                    )
+                    .await,
+            );
+        } else {
+            check_msg(
+                channel_id
+                    .say(&ctx.http, format!("Playing **{}**{}", the_song.name, id_info))
+                    .await,
+            );
+        }
+    }
+
+    if let Some(sid) = the_song.song_id {
+        let current_plays = the_song.num_plays.unwrap_or(0);
+        if let Err(e) = record_song_play(pool, sid, current_plays).await {
+            println!("Error updating play count: {}", e);
+        }
+    }
+}
+
+#[command]
+#[aliases("mii")]
+pub async fn wii(ctx: &Context, msg: &Message) -> CommandResult {
+    let guild_id = match msg.guild_id {
+        Some(id) => id,
+        None => {
+            check_msg(msg.reply(&ctx.http, "Must be in a server").await);
+            return Ok(());
+        }
+    };
+
+    let handler_lock = match crate::commands::ensure_voice_channel(ctx, guild_id, msg.author.id).await {
+        Ok(h) => h,
+        Err(e) => {
+            check_msg(msg.channel_id.say(&ctx.http, e).await);
+            return Ok(());
+        }
+    };
+
+    let pool = {
+        let data = ctx.data.read().await;
+        data.get::<DatabasePool>()
+            .cloned()
+            .expect("Expected DatabasePool in TypeMap")
+    };
+
+    let chosen_id = {
+        use rand::seq::SliceRandom;
+        let mut rng = rand::thread_rng();
+        *WII_SONG_IDS.choose(&mut rng).expect("WII_SONG_IDS is non-empty")
+    };
+
+    let maybe_song = match find_song_by_query(&pool, &chosen_id.to_string()).await {
+        Ok(s) => s,
+        Err(e) => {
+            check_msg(
+                msg.channel_id
+                    .say(&ctx.http, format!("Database error: {}", e))
+                    .await,
+            );
+            return Ok(());
+        }
+    };
+
+    let the_song = match maybe_song {
+        Some(s) => s,
+        None => {
+            check_msg(
+                msg.channel_id
+                    .say(
+                        &ctx.http,
+                        format!("Wii song ID **{}** not found in database.", chosen_id),
+                    )
+                    .await,
+            );
+            return Ok(());
+        }
+    };
+
+    play_song_struct(ctx, msg.channel_id, &handler_lock, &pool, &the_song).await;
+    Ok(())
+}
+
 /// Checks that a message successfully sent; if not, then logs why to stdout.
 fn check_msg(result: SerenityResult<Message>) {
     if let Err(why) = result {
         println!("Error sending message: {:?}", why);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::seq::SliceRandom;
+
+    #[test]
+    fn test_wii_song_ids_list() {
+        assert_eq!(WII_SONG_IDS.len(), 9);
+        let expected = [2058, 2059, 2117, 2328, 2329, 2331, 2332, 2333, 2334];
+        for id in &expected {
+            assert!(WII_SONG_IDS.contains(id), "Expected WII_SONG_IDS to contain {}", id);
+        }
+
+        let mut rng = rand::thread_rng();
+        for _ in 0..50 {
+            let picked = WII_SONG_IDS.choose(&mut rng).unwrap();
+            assert!(expected.contains(picked));
+        }
     }
 }
