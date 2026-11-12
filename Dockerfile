@@ -43,17 +43,20 @@ FROM debian:bookworm-slim AS runtime
 WORKDIR /usr/src/app
 
 # Install runtime dependencies:
-# - ca-certificates: HTTPS TLS certificates (Discord API, YouTube, XKCD)
+# - ca-certificates & curl: HTTPS TLS certificates and downloader
 # - ffmpeg: audio decoding and transcoding for voice streaming
-# - yt-dlp & python3: downloading audio from YouTube and extracting metadata
+# - python3: runtime for yt-dlp
 # - libssl3 & libsqlite3-0: shared system libraries for networking and SQLite
+# - yt-dlp: latest official binary directly from GitHub releases (apt version is too old for YouTube)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
+    curl \
     ffmpeg \
     libssl3 \
     libsqlite3-0 \
     python3 \
-    yt-dlp \
+    && curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
+    && chmod a+rx /usr/local/bin/yt-dlp \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy binaries from builder

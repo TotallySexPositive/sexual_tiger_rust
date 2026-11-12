@@ -158,8 +158,9 @@ pub async fn play(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
     if let Some(handler_lock) = manager.get(guild_id) {
         let mut handler = handler_lock.lock().await;
 
+        let clean_url = sexual_tiger::clean_youtube_url(&in_query);
         let input: songbird::input::Input =
-            songbird::input::YoutubeDl::new(reqwest::Client::new(), in_query).into();
+            songbird::input::YoutubeDl::new(reqwest::Client::new(), clean_url).into();
 
         let track = handler.enqueue_input(input).await;
         let _ = track.add_event(Event::Track(TrackEvent::Error), TrackErrorNotifier);

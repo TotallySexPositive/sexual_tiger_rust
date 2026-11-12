@@ -69,9 +69,26 @@ pub fn resolve_song_path(source: &str) -> String {
     source.to_string()
 }
 
+pub fn clean_youtube_url(url: &str) -> String {
+    if (url.contains("youtube.com/watch") || url.contains("m.youtube.com/watch")) && url.contains("&list=") {
+        if let Some(v_idx) = url.find("v=") {
+            let after_v = &url[v_idx + 2..];
+            let video_id = after_v.split('&').next().unwrap_or(after_v);
+            if !video_id.is_empty() {
+                return format!("https://www.youtube.com/watch?v={}", video_id);
+            }
+        }
+    } else if url.contains("youtu.be/") && url.contains('?') {
+        let base = url.split('?').next().unwrap_or(url);
+        return base.to_string();
+    }
+    url.to_string()
+}
+
 pub async fn download_song(uri: String) -> Result<AuxMetadata, String> {
     let song_dir = get_song_directory();
     let _dir = fs::create_dir_all(&song_dir).map_err(|e| format!("Couldn't create SONG_DIRECTORY: {}", e))?;
+    let target_uri = clean_youtube_url(&uri);
 
     let ytdl_args = [
         "--print-json",
@@ -82,7 +99,7 @@ pub async fn download_song(uri: String) -> Result<AuxMetadata, String> {
         "--no-playlist",
         "--ignore-config",
         "--no-warnings",
-        &uri,
+        &target_uri,
         "-o",
         &format!("{}/%(title)s.%(ext)s", &song_dir),
     ];
@@ -94,7 +111,7 @@ pub async fn download_song(uri: String) -> Result<AuxMetadata, String> {
         .stdout(Stdio::piped())
         .spawn()
     {
-        Ok(_) => _ytdl_metadata(&uri).await,
+        Ok(_) => _ytdl_metadata(&target_uri).await,
         Err(x) => Err(format!("Something went wrong with yt-dlp: {}", x)),
     }
 }
@@ -477,5 +494,29 @@ mod tests {
                 Err(e) => panic!("PROBE FAILED: {:?}", e),
             }
         }
+    }
+
+    #[test]
+    fn test_clean_youtube_url() {
+        let dirty = "https://www.youtube.com/watch?v=-J7J_IWUhls&list=RD-J7J_IWUhls&start_radio=1";
+        assert_eq!(
+            clean_youtube_url(dirty),
+            "https://www.youtube.com/watch?v=-J7J_IWUhls"
+        );
+
+        let mobile = "https://m.youtube.com/watch?v=abc12345&list=PL123&index=2";
+        assert_eq!(
+            clean_youtube_url(mobile),
+            "https://www.youtube.com/watch?v=abc12345"
+        );
+
+        let short = "https://youtu.be/-J7J_IWUhls?list=RD-J7J_IWUhls";
+        assert_eq!(
+            clean_youtube_url(short),
+            "https://youtu.be/-J7J_IWUhls"
+        );
+
+        let clean = "https://www.youtube.com/watch?v=-J7J_IWUhls";
+        assert_eq!(clean_youtube_url(clean), clean);
     }
 }

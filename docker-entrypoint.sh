@@ -14,5 +14,8 @@ elif [ -d "/usr/src/app/songs" ] && { [ ! -e "/usr/src/app/audio" ] || [ -z "$(l
     ln -s /usr/src/app/songs /usr/src/app/audio
 fi
 
+# Auto-update yt-dlp to stay compatible with YouTube API updates
+yt-dlp -U || true
+
 # Execute the container command
 exec "$@"
