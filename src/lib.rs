@@ -16,6 +16,10 @@ use std::{
 };
 use tokio::process::Command as TokioCommand;
 
+pub const MAX_VOLUME: f32 = 1.0;
+pub const DEFAULT_BOT_VOLUME: f32 = 0.25;
+pub const CLIP_VOLUME: f32 = 0.75;
+
 pub struct DatabasePool;
 
 impl TypeMapKey for DatabasePool {

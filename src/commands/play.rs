@@ -108,6 +108,7 @@ pub async fn play(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
 
         let track = handler.enqueue_input(input).await;
         let _ = track.add_event(Event::Track(TrackEvent::Error), TrackErrorNotifier);
+        let _ = track.set_volume(sexual_tiger::DEFAULT_BOT_VOLUME);
         let q_len = handler.queue().len();
         if q_len > 1 {
             check_msg(
@@ -143,6 +144,9 @@ pub async fn skip(ctx: &Context, msg: &Message) -> CommandResult {
         if queue.is_empty() {
             check_msg(msg.channel_id.say(&ctx.http, "Queue is empty.").await);
         } else {
+            if let Some(current) = queue.current() {
+                let _ = current.disable_loop();
+            }
             let _ = queue.skip();
             check_msg(msg.channel_id.say(&ctx.http, "Skipped song.").await);
         }
@@ -267,7 +271,8 @@ pub async fn queue(ctx: &Context, msg: &Message) -> CommandResult {
 
     if let Some(handler_lock) = manager.get(guild_id) {
         let handler = handler_lock.lock().await;
-        let q_len = handler.queue().len();
+        let queue = handler.queue();
+        let q_len = queue.len();
         if q_len == 0 {
             check_msg(
                 msg.channel_id
@@ -275,14 +280,126 @@ pub async fn queue(ctx: &Context, msg: &Message) -> CommandResult {
                     .await,
             );
         } else {
+            let loop_tag = if let Some(current) = queue.current() {
+                if let Ok(info) = current.get_info().await {
+                    if matches!(info.loops, songbird::tracks::LoopState::Infinite) {
+                        " (Current song is repeating 🔁)"
+                    } else {
+                        ""
+                    }
+                } else {
+                    ""
+                }
+            } else {
+                ""
+            };
             check_msg(
                 msg.channel_id
                     .say(
                         &ctx.http,
-                        format!("There are **{}** song(s) in the queue.", q_len),
+                        format!("There are **{}** song(s) in the queue.{}", q_len, loop_tag),
                     )
                     .await,
             );
+        }
+    } else {
+        check_msg(msg.reply(&ctx.http, "Not in a voice channel").await);
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RepeatAction {
+    Set(bool),
+    Status,
+}
+
+pub fn parse_repeat_input(input: Option<&str>, currently_looping: bool) -> RepeatAction {
+    match input.map(|s| s.trim().to_lowercase()) {
+        None => RepeatAction::Set(!currently_looping),
+        Some(s) if s.is_empty() => RepeatAction::Set(!currently_looping),
+        Some(s) => match s.as_str() {
+            "on" | "true" | "enable" | "yes" | "1" => RepeatAction::Set(true),
+            "off" | "false" | "disable" | "no" | "0" => RepeatAction::Set(false),
+            "toggle" => RepeatAction::Set(!currently_looping),
+            "status" | "check" | "info" => RepeatAction::Status,
+            _ => RepeatAction::Set(!currently_looping),
+        },
+    }
+}
+
+#[command]
+#[aliases("loop")]
+pub async fn repeat(ctx: &Context, msg: &Message, mut args: Args) -> CommandResult {
+    let guild_id = match msg.guild_id {
+        Some(id) => id,
+        None => {
+            check_msg(msg.reply(&ctx.http, "Must be in a server").await);
+            return Ok(());
+        }
+    };
+
+    let manager = songbird::get(ctx)
+        .await
+        .expect("Songbird Voice client placed in at initialisation.")
+        .clone();
+
+    if let Some(handler_lock) = manager.get(guild_id) {
+        let handler = handler_lock.lock().await;
+        let queue = handler.queue();
+        let current_track = match queue.current() {
+            Some(t) => t,
+            None => {
+                check_msg(
+                    msg.channel_id
+                        .say(&ctx.http, "Nothing is currently playing to repeat.")
+                        .await,
+                );
+                return Ok(());
+            }
+        };
+
+        let info = current_track.get_info().await;
+        let currently_looping = info
+            .as_ref()
+            .map(|i| matches!(i.loops, songbird::tracks::LoopState::Infinite))
+            .unwrap_or(false);
+
+        let arg_str = args.single::<String>().ok();
+        let action = parse_repeat_input(arg_str.as_deref(), currently_looping);
+
+        match action {
+            RepeatAction::Status => {
+                let status_msg = if currently_looping {
+                    "Repeat is currently **ON** (🔁). Repeating current track endlessly until turned off, skipped, or stopped."
+                } else {
+                    "Repeat is currently **OFF**."
+                };
+                check_msg(msg.channel_id.say(&ctx.http, status_msg).await);
+            }
+            RepeatAction::Set(true) => {
+                let _ = current_track.enable_loop();
+                check_msg(
+                    msg.channel_id
+                        .say(
+                            &ctx.http,
+                            "Repeat is now **ON** (🔁). The current song will repeat forever until turned off, skipped, or stopped.",
+                        )
+                        .await,
+                );
+            }
+            RepeatAction::Set(false) => {
+                let _ = current_track.disable_loop();
+                check_msg(
+                    msg.channel_id
+                        .say(
+                            &ctx.http,
+                            "Repeat is now **OFF**. The current song will finish and not repeat.",
+                        )
+                        .await,
+                );
+            }
         }
     } else {
         check_msg(msg.reply(&ctx.http, "Not in a voice channel").await);
@@ -595,6 +712,17 @@ pub async fn play_song_struct(
     pool: &sqlx::SqlitePool,
     the_song: &sexual_tiger::models::Song,
 ) {
+    play_song_struct_internal(ctx, channel_id, handler_lock, pool, the_song, true).await;
+}
+
+pub async fn play_song_struct_internal(
+    ctx: &Context,
+    channel_id: serenity::model::id::ChannelId,
+    handler_lock: &std::sync::Arc<tokio::sync::Mutex<songbird::Call>>,
+    pool: &sqlx::SqlitePool,
+    the_song: &sexual_tiger::models::Song,
+    notify: bool,
+) {
     println!("Playing local song: {:?}", the_song);
 
     let resolved_source = sexual_tiger::resolve_song_path(&the_song.source);
@@ -618,31 +746,33 @@ pub async fn play_song_struct(
         let track = handler.enqueue_input(input).await;
         let _ = track.add_event(Event::Track(TrackEvent::Error), TrackErrorNotifier);
         if the_song.is_clip.unwrap_or(0) == 1 {
-            let _ = track.set_volume(5.0);
+            let _ = track.set_volume(sexual_tiger::CLIP_VOLUME);
         } else {
-            let _ = track.set_volume(1.5);
+            let _ = track.set_volume(sexual_tiger::DEFAULT_BOT_VOLUME);
         }
 
-        let q_len = handler.queue().len();
-        let id_info = the_song
-            .song_id
-            .map(|id| format!(" (ID: {})", id))
-            .unwrap_or_default();
-        if q_len > 1 {
-            check_msg(
-                channel_id
-                    .say(
-                        &ctx.http,
-                        format!("Queued **{}**{} (position: {})", the_song.name, id_info, q_len),
-                    )
-                    .await,
-            );
-        } else {
-            check_msg(
-                channel_id
-                    .say(&ctx.http, format!("Playing **{}**{}", the_song.name, id_info))
-                    .await,
-            );
+        if notify {
+            let q_len = handler.queue().len();
+            let id_info = the_song
+                .song_id
+                .map(|id| format!(" (ID: {})", id))
+                .unwrap_or_default();
+            if q_len > 1 {
+                check_msg(
+                    channel_id
+                        .say(
+                            &ctx.http,
+                            format!("Queued **{}**{} (position: {})", the_song.name, id_info, q_len),
+                        )
+                        .await,
+                );
+            } else {
+                check_msg(
+                    channel_id
+                        .say(&ctx.http, format!("Playing **{}**{}", the_song.name, id_info))
+                        .await,
+                );
+            }
         }
     }
 
@@ -713,7 +843,8 @@ pub async fn wii(ctx: &Context, msg: &Message) -> CommandResult {
         }
     };
 
-    play_song_struct(ctx, msg.channel_id, &handler_lock, &pool, &the_song).await;
+    // Play without notifying chat which song is being played
+    play_song_struct_internal(ctx, msg.channel_id, &handler_lock, &pool, &the_song, false).await;
     Ok(())
 }
 
@@ -742,5 +873,27 @@ mod tests {
             let picked = WII_SONG_IDS.choose(&mut rng).unwrap();
             assert!(expected.contains(picked));
         }
+    }
+
+    #[test]
+    fn test_parse_repeat_input() {
+        assert_eq!(parse_repeat_input(None, false), RepeatAction::Set(true));
+        assert_eq!(parse_repeat_input(None, true), RepeatAction::Set(false));
+        assert_eq!(parse_repeat_input(Some(""), false), RepeatAction::Set(true));
+        assert_eq!(parse_repeat_input(Some("on"), false), RepeatAction::Set(true));
+        assert_eq!(parse_repeat_input(Some("enable"), false), RepeatAction::Set(true));
+        assert_eq!(parse_repeat_input(Some("true"), false), RepeatAction::Set(true));
+        assert_eq!(parse_repeat_input(Some("yes"), false), RepeatAction::Set(true));
+        assert_eq!(parse_repeat_input(Some("1"), false), RepeatAction::Set(true));
+        assert_eq!(parse_repeat_input(Some("off"), true), RepeatAction::Set(false));
+        assert_eq!(parse_repeat_input(Some("disable"), true), RepeatAction::Set(false));
+        assert_eq!(parse_repeat_input(Some("false"), true), RepeatAction::Set(false));
+        assert_eq!(parse_repeat_input(Some("no"), true), RepeatAction::Set(false));
+        assert_eq!(parse_repeat_input(Some("0"), true), RepeatAction::Set(false));
+        assert_eq!(parse_repeat_input(Some("toggle"), false), RepeatAction::Set(true));
+        assert_eq!(parse_repeat_input(Some("toggle"), true), RepeatAction::Set(false));
+        assert_eq!(parse_repeat_input(Some("status"), false), RepeatAction::Status);
+        assert_eq!(parse_repeat_input(Some("check"), true), RepeatAction::Status);
+        assert_eq!(parse_repeat_input(Some("info"), true), RepeatAction::Status);
     }
 }

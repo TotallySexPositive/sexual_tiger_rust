@@ -41,6 +41,7 @@ use songbird::SerenityInit;
     pause,
     resume,
     queue,
+    repeat,
     songs,
     join,
     leave,

@@ -662,9 +662,9 @@ async fn play_playlist_internal(
             let track = handler.enqueue_input(input).await;
             let _ = track.add_event(Event::Track(TrackEvent::Error), TrackErrorNotifier);
             if s.is_clip.unwrap_or(0) == 1 {
-                let _ = track.set_volume(5.0);
+                let _ = track.set_volume(sexual_tiger::CLIP_VOLUME);
             } else {
-                let _ = track.set_volume(1.5);
+                let _ = track.set_volume(sexual_tiger::DEFAULT_BOT_VOLUME);
             }
             if let Some(sid) = s.song_id {
                 let plays = s.num_plays.unwrap_or(0);

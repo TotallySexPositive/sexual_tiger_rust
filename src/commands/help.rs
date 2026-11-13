@@ -45,15 +45,16 @@ pub fn get_general_help_embed() -> CreateEmbed {
              • `stop` — Stop audio playback and clear the queue\n\
              • `pause` / `resume` — Pause or resume the current stream\n\
              • `queue` — View how many songs are in the queue\n\
+             • `repeat [on | off]` (or `loop`) — Repeat current song forever until turned off or stopped\n\
              • `shuffle [name | ID#]` — Shuffle upcoming queue tracks, or shuffle and play a playlist\n\
              • `songs [query | ID#]` — Display top 100 played songs table (with IDs) or search",
             false,
         )
         .field(
             "🔊 Volume Controls",
-            "• `volume [level]` — View or set volume (e.g. `80`, `120%`, `1.5`)\n\
-             • `vup [step]` — Increase volume by 10% (or custom amount)\n\
-             • `vdown [step]` — Decrease volume by 10% (or custom amount)",
+            "• `volume [level]` — View or set volume (e.g. `25%`, `50%`, `80%`, `1.0`)\n\
+             • `vup [step]` — Doubles current volume (or increases by custom step)\n\
+             • `vdown [step]` — Halves current volume (or decreases by custom step)",
             false,
         )
         .field(
@@ -118,24 +119,25 @@ pub fn get_command_help_embed(cmd: &str) -> Result<CreateEmbed, String> {
         "volume" | "vol" | "v" => (
             "Command: volume",
             "Views or adjusts the playback volume for the current track and all tracks in the queue. \
-             Supports percentages (e.g. `80%`, `150%`) or raw numbers (e.g. `80`, `1.5`, `0.5`). Maximum volume is 500% (5.0).",
+             Supports percentages (e.g. `25%`, `50%`, `80%`) or raw multipliers (e.g. `0.25`, `0.5`, `1.0`). \
+             Maximum volume is 100% (1.0). Songs start at 25% (0.25), clips start at 75% (0.75).",
             "• `~volume` (check volume)\n• `~volume <#>` (set volume)\n• `/volume [level:#]`",
             "`vol`, `v`",
-            "• `~volume`\n• `~volume 80`\n• `~volume 120%`\n• `/volume level:80`",
+            "• `~volume`\n• `~volume 50`\n• `~volume 80%`\n• `~volume 0.5`\n• `/volume level:80`",
         ),
         "vup" | "volup" | "volumeup" => (
             "Command: vup",
-            "Increases the stream volume dynamically while audio is playing. Defaults to +10%, but an optional step can be passed.",
-            "• `~vup [amount]`\n• `/vup [step:#]`",
+            "Increases playback volume. By default doubles the current volume (e.g. 25% -> 50% -> 100%), or increases by a custom step (e.g. `10%`, `0.1`). Maximum volume is 100% (1.0).",
+            "• `~vup` (doubles current volume)\n• `~vup [amount]`\n• `/vup [step:#]`",
             "`volup`, `volumeup`",
-            "• `~vup` (increases volume by 10%)\n• `~vup 20` (increases volume by 20%)\n• `/vup step:20`",
+            "• `~vup` (doubles volume)\n• `~vup 10%`\n• `/vup`",
         ),
         "vdown" | "voldown" | "volumedown" => (
             "Command: vdown",
-            "Decreases the stream volume dynamically while audio is playing. Defaults to -10%, but an optional step can be passed.",
-            "• `~vdown [amount]`\n• `/vdown [step:#]`",
+            "Decreases playback volume. By default halves the current volume (e.g. 100% -> 50% -> 25%), or decreases by a custom step (e.g. `10%`, `0.1`).",
+            "• `~vdown` (halves current volume)\n• `~vdown [amount]`\n• `/vdown [step:#]`",
             "`voldown`, `volumedown`",
-            "• `~vdown` (decreases volume by 10%)\n• `~vdown 20` (decreases volume by 20%)\n• `/vdown step:20`",
+            "• `~vdown` (halves volume)\n• `~vdown 10%`\n• `/vdown`",
         ),
         "playlist" | "pl" | "playplaylist" | "ppl" => (
             "Command: playlist",
@@ -214,6 +216,13 @@ pub fn get_command_help_embed(cmd: &str) -> Result<CreateEmbed, String> {
             "• `~queue`\n• `/queue`",
             "`q` (prefix only)",
             "• `~queue`\n• `/queue`",
+        ),
+        "repeat" | "loop" => (
+            "Command: repeat",
+            "Toggles or sets infinite repeat for the currently playing song in the queue. The song will loop endlessly until turned off, skipped, stopped, or disconnected with `~fuckoff`.",
+            "• `~repeat` (toggles repeat on/off)\n• `~repeat on`\n• `~repeat off`\n• `~repeat status`\n• `/repeat [enabled:True|False]`",
+            "`loop`",
+            "• `~repeat`\n• `~repeat on`\n• `~repeat off`\n• `/repeat enabled:True`",
         ),
         "join" | "j" => (
             "Command: join",

@@ -17,7 +17,7 @@ use sexual_tiger::{
     add_song_to_playlist, clean_youtube_url, create_playlist, delete_playlist, download_song,
     find_song_by_query, get_playlist_by_name, get_playlist_songs, insert_song, list_playlists,
     list_songs, new_song, record_song_play, remove_song_from_playlist, resolve_song_path,
-    search_songs, DatabasePool,
+    search_songs, DatabasePool, CLIP_VOLUME, DEFAULT_BOT_VOLUME, MAX_VOLUME,
 };
 use songbird::events::{Event, EventContext, EventHandler, TrackEvent};
 
@@ -298,6 +298,17 @@ pub fn create_slash_commands() -> Vec<CreateCommand> {
             ),
         // /wii
         CreateCommand::new("wii").description("Plays an anxiety-inducing cursed Wii / Mii theme song at random"),
+        // /repeat
+        CreateCommand::new("repeat")
+            .description("Repeat the current song indefinitely until turned off or stopped")
+            .add_option(
+                CreateCommandOption::new(
+                    CommandOptionType::Boolean,
+                    "enabled",
+                    "Enable or disable repeating the current song (omit to toggle)",
+                )
+                .required(false),
+            ),
         // /xkcd
         CreateCommand::new("xkcd").description("Display a random XKCD comic"),
     ]
@@ -308,6 +319,17 @@ fn get_opt_str<'a>(options: &'a [CommandDataOption], name: &str) -> Option<&'a s
         if opt.name == name {
             if let CommandDataOptionValue::String(s) = &opt.value {
                 return Some(s.as_str());
+            }
+        }
+    }
+    None
+}
+
+fn get_opt_bool(options: &[CommandDataOption], name: &str) -> Option<bool> {
+    for opt in options {
+        if opt.name == name {
+            if let CommandDataOptionValue::Boolean(b) = opt.value {
+                return Some(b);
             }
         }
     }
@@ -382,6 +404,10 @@ pub async fn handle_slash_command(ctx: &Context, command: &CommandInteraction) {
         }
         "queue" => {
             handle_queue(ctx, command, guild_id).await;
+        }
+        "repeat" => {
+            let enabled_opt = get_opt_bool(&command.data.options, "enabled");
+            handle_repeat(ctx, command, guild_id, enabled_opt).await;
         }
         "shuffle" => {
             let playlist_opt = get_opt_str(&command.data.options, "playlist");
@@ -506,6 +532,7 @@ async fn handle_play(
         let mut handler = handler_lock.lock().await;
         let track = handler.enqueue_input(input).await;
         let _ = track.add_event(Event::Track(TrackEvent::Error), SlashTrackErrorNotifier);
+        let _ = track.set_volume(DEFAULT_BOT_VOLUME);
         let q_len = handler.queue().len();
 
         let msg = if q_len > 1 {
@@ -549,9 +576,9 @@ async fn handle_play(
     let _ = track.add_event(Event::Track(TrackEvent::Error), SlashTrackErrorNotifier);
 
     if song.is_clip.unwrap_or(0) == 1 {
-        let _ = track.set_volume(5.0);
+        let _ = track.set_volume(CLIP_VOLUME);
     } else {
-        let _ = track.set_volume(1.5);
+        let _ = track.set_volume(DEFAULT_BOT_VOLUME);
     }
 
     let q_len = handler.queue().len();
@@ -631,29 +658,21 @@ async fn handle_wii(
     let _ = track.add_event(Event::Track(TrackEvent::Error), SlashTrackErrorNotifier);
 
     if song.is_clip.unwrap_or(0) == 1 {
-        let _ = track.set_volume(5.0);
+        let _ = track.set_volume(CLIP_VOLUME);
     } else {
-        let _ = track.set_volume(1.5);
+        let _ = track.set_volume(DEFAULT_BOT_VOLUME);
     }
-
-    let q_len = handler.queue().len();
-    let id_info = song
-        .song_id
-        .map(|id| format!(" (ID: {})", id))
-        .unwrap_or_default();
-    let msg = if q_len > 1 {
-        format!("Queued **{}**{} (position: {}) 🎮", song.name, id_info, q_len)
-    } else {
-        format!("Playing **{}**{} 🎮", song.name, id_info)
-    };
 
     if let Some(sid) = song.song_id {
         let plays = song.num_plays.unwrap_or(0);
         let _ = record_song_play(pool, sid, plays).await;
     }
 
-    let edit = EditInteractionResponse::new().content(msg);
-    let _ = command.edit_response(&ctx.http, edit).await;
+    // Do not send notification of which Wii song is being played (part of the trauma)
+    if command.delete_response(&ctx.http).await.is_err() {
+        let edit = EditInteractionResponse::new().content("🎮");
+        let _ = command.edit_response(&ctx.http, edit).await;
+    }
 }
 
 async fn handle_volume(
@@ -685,7 +704,7 @@ async fn handle_volume(
     match level {
         None => {
             let info = current_track.get_info().await;
-            let cur_vol = info.as_ref().map(|i| i.volume).unwrap_or(1.0);
+            let cur_vol = info.as_ref().map(|i| i.volume).unwrap_or(DEFAULT_BOT_VOLUME);
             let pct = (cur_vol * 100.0).round() as i32;
             let emoji = if cur_vol == 0.0 { "🔇" } else if cur_vol < 0.8 { "🔉" } else { "🔊" };
             let edit = EditInteractionResponse::new().content(format!(
@@ -698,7 +717,7 @@ async fn handle_volume(
             let new_vol = match parse_volume_input(lvl_str) {
                 Some(v) => v,
                 None => {
-                    let edit = EditInteractionResponse::new().content("Invalid volume level. Examples: `80`, `120%`, `1.5`.");
+                    let edit = EditInteractionResponse::new().content("Invalid volume level. Examples: `25%`, `50%`, `80%`, `1.0`.");
                     let _ = command.edit_response(&ctx.http, edit).await;
                     return;
                 }
@@ -748,10 +767,34 @@ async fn handle_vup(
         }
     };
 
-    let delta = parse_step_input(step);
+    let step_opt = parse_step_input(step);
     let info = current_track.get_info().await;
-    let cur_vol = info.as_ref().map(|i| i.volume).unwrap_or(1.0);
-    let new_vol = (cur_vol + delta).clamp(0.0, 5.0);
+    let cur_vol = info.as_ref().map(|i| i.volume).unwrap_or(DEFAULT_BOT_VOLUME);
+
+    let (new_vol, msg) = match step_opt {
+        Some(delta) => {
+            let n = (cur_vol + delta).clamp(0.0, MAX_VOLUME);
+            let pct = (n * 100.0).round() as i32;
+            let step_pct = (delta * 100.0).round() as i32;
+            let emoji = if n == 0.0 { "🔇" } else if n < 0.8 { "🔉" } else { "🔊" };
+            (n, format!("{} Volume increased by **+{}%** to **{}%** ({:.2})", emoji, step_pct, pct, n))
+        }
+        None => {
+            let n = if cur_vol == 0.0 {
+                0.05
+            } else {
+                (cur_vol * 2.0).clamp(0.0, MAX_VOLUME)
+            };
+            let pct = (n * 100.0).round() as i32;
+            let emoji = if n == 0.0 { "🔇" } else if n < 0.8 { "🔉" } else { "🔊" };
+            let text = if cur_vol >= MAX_VOLUME && n >= MAX_VOLUME {
+                format!("{} Volume is already at maximum **{}%** ({:.2})", emoji, pct, n)
+            } else {
+                format!("{} Volume doubled to **{}%** ({:.2})", emoji, pct, n)
+            };
+            (n, text)
+        }
+    };
 
     let _ = current_track.set_volume(new_vol);
     handler.queue().modify_queue(|q| {
@@ -760,12 +803,7 @@ async fn handle_vup(
         }
     });
 
-    let pct = (new_vol * 100.0).round() as i32;
-    let step_pct = (delta * 100.0).round() as i32;
-    let edit = EditInteractionResponse::new().content(format!(
-        "🔊 Volume increased by **+{}%** to **{}%** ({:.2})",
-        step_pct, pct, new_vol
-    ));
+    let edit = EditInteractionResponse::new().content(msg);
     let _ = command.edit_response(&ctx.http, edit).await;
 }
 
@@ -795,10 +833,25 @@ async fn handle_vdown(
         }
     };
 
-    let delta = parse_step_input(step);
+    let step_opt = parse_step_input(step);
     let info = current_track.get_info().await;
-    let cur_vol = info.as_ref().map(|i| i.volume).unwrap_or(1.0);
-    let new_vol = (cur_vol - delta).clamp(0.0, 5.0);
+    let cur_vol = info.as_ref().map(|i| i.volume).unwrap_or(DEFAULT_BOT_VOLUME);
+
+    let (new_vol, msg) = match step_opt {
+        Some(delta) => {
+            let n = (cur_vol - delta).clamp(0.0, MAX_VOLUME);
+            let pct = (n * 100.0).round() as i32;
+            let step_pct = (delta * 100.0).round() as i32;
+            let emoji = if n == 0.0 { "🔇" } else if n < 0.8 { "🔉" } else { "🔊" };
+            (n, format!("{} Volume decreased by **-{}%** to **{}%** ({:.2})", emoji, step_pct, pct, n))
+        }
+        None => {
+            let n = (cur_vol / 2.0).clamp(0.0, MAX_VOLUME);
+            let pct = (n * 100.0).round() as i32;
+            let emoji = if n == 0.0 { "🔇" } else if n < 0.8 { "🔉" } else { "🔊" };
+            (n, format!("{} Volume halved to **{}%** ({:.2})", emoji, pct, n))
+        }
+    };
 
     let _ = current_track.set_volume(new_vol);
     handler.queue().modify_queue(|q| {
@@ -807,13 +860,7 @@ async fn handle_vdown(
         }
     });
 
-    let pct = (new_vol * 100.0).round() as i32;
-    let step_pct = (delta * 100.0).round() as i32;
-    let emoji = if new_vol == 0.0 { "🔇" } else if new_vol < 0.8 { "🔉" } else { "🔊" };
-    let edit = EditInteractionResponse::new().content(format!(
-        "{} Volume decreased by **-{}%** to **{}%** ({:.2})",
-        emoji, step_pct, pct, new_vol
-    ));
+    let edit = EditInteractionResponse::new().content(msg);
     let _ = command.edit_response(&ctx.http, edit).await;
 }
 
@@ -825,6 +872,9 @@ async fn handle_skip(ctx: &Context, command: &CommandInteraction, guild_id: Guil
             let edit = EditInteractionResponse::new().content("The queue is empty.");
             let _ = command.edit_response(&ctx.http, edit).await;
         } else {
+            if let Some(current) = handler.queue().current() {
+                let _ = current.disable_loop();
+            }
             let _ = handler.queue().skip();
             let edit = EditInteractionResponse::new().content("Skipped song. ⏭️");
             let _ = command.edit_response(&ctx.http, edit).await;
@@ -886,17 +936,78 @@ async fn handle_queue(ctx: &Context, command: &CommandInteraction, guild_id: Gui
     if let Some(handler_lock) = manager.get(guild_id) {
         let handler = handler_lock.lock().await;
         let q_len = handler.queue().len();
-        let msg = if q_len == 0 {
-            "The queue is currently empty.".to_string()
+        if q_len == 0 {
+            let edit = EditInteractionResponse::new().content("The queue is currently empty.");
+            let _ = command.edit_response(&ctx.http, edit).await;
         } else {
-            format!("There are **{}** song(s) in the queue.", q_len)
-        };
-        let edit = EditInteractionResponse::new().content(msg);
-        let _ = command.edit_response(&ctx.http, edit).await;
+            let loop_tag = if let Some(current) = handler.queue().current() {
+                if let Ok(info) = current.get_info().await {
+                    if matches!(info.loops, songbird::tracks::LoopState::Infinite) {
+                        " (Current song is repeating 🔁)"
+                    } else {
+                        ""
+                    }
+                } else {
+                    ""
+                }
+            } else {
+                ""
+            };
+            let msg = format!("There are **{}** song(s) in the queue.{}", q_len, loop_tag);
+            let edit = EditInteractionResponse::new().content(msg);
+            let _ = command.edit_response(&ctx.http, edit).await;
+        }
     } else {
         let edit = EditInteractionResponse::new().content("Not in a voice channel.");
         let _ = command.edit_response(&ctx.http, edit).await;
     }
+}
+
+async fn handle_repeat(
+    ctx: &Context,
+    command: &CommandInteraction,
+    guild_id: GuildId,
+    enabled_opt: Option<bool>,
+) {
+    let manager = songbird::get(ctx).await.unwrap().clone();
+    let handler_lock = match manager.get(guild_id) {
+        Some(h) => h,
+        None => {
+            let edit = EditInteractionResponse::new().content("Not in a voice channel.");
+            let _ = command.edit_response(&ctx.http, edit).await;
+            return;
+        }
+    };
+
+    let handler = handler_lock.lock().await;
+    let queue = handler.queue();
+    let current_track = match queue.current() {
+        Some(t) => t,
+        None => {
+            let edit = EditInteractionResponse::new().content("Nothing is currently playing to repeat.");
+            let _ = command.edit_response(&ctx.http, edit).await;
+            return;
+        }
+    };
+
+    let info = current_track.get_info().await;
+    let currently_looping = info
+        .as_ref()
+        .map(|i| matches!(i.loops, songbird::tracks::LoopState::Infinite))
+        .unwrap_or(false);
+
+    let target = enabled_opt.unwrap_or(!currently_looping);
+
+    let msg = if target {
+        let _ = current_track.enable_loop();
+        "Repeat is now **ON** (🔁). The current song will repeat forever until turned off, skipped, or stopped."
+    } else {
+        let _ = current_track.disable_loop();
+        "Repeat is now **OFF**. The current song will finish and not repeat."
+    };
+
+    let edit = EditInteractionResponse::new().content(msg);
+    let _ = command.edit_response(&ctx.http, edit).await;
 }
 
 async fn edit_or_followup_chunked(
@@ -1309,9 +1420,9 @@ async fn play_playlist_slash(
             let track = handler.enqueue_input(input).await;
             let _ = track.add_event(Event::Track(TrackEvent::Error), SlashTrackErrorNotifier);
             if s.is_clip.unwrap_or(0) == 1 {
-                let _ = track.set_volume(5.0);
+                let _ = track.set_volume(CLIP_VOLUME);
             } else {
-                let _ = track.set_volume(1.5);
+                let _ = track.set_volume(DEFAULT_BOT_VOLUME);
             }
             if let Some(sid) = s.song_id {
                 let plays = s.num_plays.unwrap_or(0);
@@ -1503,7 +1614,7 @@ mod tests {
     #[test]
     fn test_create_slash_commands() {
         let commands = create_slash_commands();
-        assert_eq!(commands.len(), 25);
+        assert_eq!(commands.len(), 26);
 
         // Check specific command names exist
         let names: Vec<String> = commands
@@ -1528,6 +1639,7 @@ mod tests {
         assert!(names.contains(&"pause".to_string()));
         assert!(names.contains(&"resume".to_string()));
         assert!(names.contains(&"queue".to_string()));
+        assert!(names.contains(&"repeat".to_string()));
         assert!(names.contains(&"songs".to_string()));
         assert!(names.contains(&"join".to_string()));
         assert!(names.contains(&"leave".to_string()));

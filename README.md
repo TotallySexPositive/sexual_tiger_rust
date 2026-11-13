@@ -87,6 +87,7 @@ Sexual Tiger supports **both** classic prefix commands (`~`) and modern native D
 | `~pause` | `/pause` | — | Pauses playback of the active track | `~pause`<br>`/pause` |
 | `~resume` | `/resume` | — | Resumes playback of a paused track | `~resume`<br>`/resume` |
 | `~queue` | `/queue` | — | Displays the total number of songs queued | `~queue`<br>`/queue` |
+| `~repeat` | `/repeat` | `[enabled: <bool \| on \| off>]` | Repeats the current song in the queue forever until turned off, skipped, or stopped | `~repeat`<br>`~repeat on`<br>`~repeat off`<br>`/repeat enabled:True` |
 | `~shuffle` | `/shuffle` | `[playlist: <name \| ID#>]` | Shuffles upcoming tracks in voice queue, or shuffles and plays a playlist (autojoins voice) | `~shuffle`<br>`~shuffle 1`<br>`/shuffle`<br>`/shuffle playlist:Gym Mix` |
 | `~songs` | `/songs` | `[query: <term \| ID#>]` | Displays top 100 played songs sorted by plays (or search results) in a formatted table with database IDs | `~songs`<br>`~songs 1`<br>`/songs query:alarm` |
 
@@ -94,18 +95,18 @@ Sexual Tiger supports **both** classic prefix commands (`~`) and modern native D
 
 ### 🔊 Volume Controls
 
-Adjusts playback volume in real-time for the active stream and applies across all upcoming songs in the queue.
+Adjusts playback volume in real-time for the active stream and applies across all upcoming songs in the queue. Standard songs start at **25%** (`0.25`), clips start at **75%** (`0.75`), and the maximum volume is **100%** (`1.0`).
 
 | Prefix Command | Slash Command | Arguments | Description | Example |
 |---|---|---|---|---|
-| `~volume` | `/volume` | `[level: <#>]` | Displays current volume or sets volume (0% to 500%) | `~volume`<br>`/volume level:80`<br>`~volume 120%`<br>`~volume 1.5` |
-| `~vup` | `/vup` | `[step: <#>]` | Increases volume by +10% (default) or by custom step | `~vup`<br>`/vup step:20` |
-| `~vdown` | `/vdown` | `[step: <#>]` | Decreases volume by -10% (default) or by custom step | `~vdown`<br>`/vdown step:15` |
+| `~volume` | `/volume` | `[level: <#>]` | Displays current volume or sets volume (0% to 100%) | `~volume`<br>`/volume level:50`<br>`~volume 80%`<br>`~volume 0.5` |
+| `~vup` | `/vup` | `[step: <#>]` | Doubles current volume (default) or increases by custom step | `~vup`<br>`/vup`<br>`~vup 10%`<br>`/vup step:10` |
+| `~vdown` | `/vdown` | `[step: <#>]` | Halves current volume (default) or decreases by custom step | `~vdown`<br>`/vdown`<br>`~vdown 10%`<br>`/vdown step:10` |
 
 **Volume Argument Formats:**
-- **Percentages:** `~volume 80%`, `/volume level:80%`
-- **Multipliers:** `~volume 1.0` (100%), `~volume 1.5` (150%), `~volume 0.5` (50%)
-- **Integers:** `~volume 80` (treated as 80%), `~volume 1` (100%), `~volume 2` (200%)
+- **Percentages:** `~volume 25%`, `~volume 50%`, `~volume 80%`, `/volume level:80%`
+- **Multipliers:** `~volume 0.25` (25%), `~volume 0.5` (50%), `~volume 0.75` (75%), `~volume 1.0` (100%)
+- **Integers:** `~volume 25` (25%), `~volume 50` (50%), `~volume 80` (80%), `~volume 1` (100%)
 
 ---
 
