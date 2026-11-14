@@ -565,6 +565,76 @@ pub fn format_now_playing_message(
     format!("🎶 Now playing: **{title}**{id_str} [{progress}]{loop_tag}")
 }
 
+pub async fn get_current_playing_title(manager: &songbird::Songbird) -> Option<String> {
+    let mut paused_title: Option<String> = None;
+
+    for (_guild_id, handler_lock) in manager.iter() {
+        let handler = handler_lock.lock().await;
+        let queue = handler.queue();
+        if let Some(current) = queue.current() {
+            if let Ok(info) = current.get_info().await {
+                match info.playing {
+                    songbird::tracks::PlayMode::Play => {
+                        let user_data = get_track_user_data(&current);
+                        let title = user_data
+                            .as_ref()
+                            .map(|d| d.title.clone())
+                            .unwrap_or_else(|| "Music".to_string());
+                        return Some(title);
+                    }
+                    songbird::tracks::PlayMode::Pause => {
+                        if paused_title.is_none() {
+                            let user_data = get_track_user_data(&current);
+                            let title = user_data
+                                .as_ref()
+                                .map(|d| format!("[Paused] {}", d.title))
+                                .unwrap_or_else(|| "[Paused]".to_string());
+                            paused_title = Some(title);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    paused_title
+}
+
+pub fn start_presence_updater(
+    shard: serenity::gateway::ShardMessenger,
+    manager: std::sync::Arc<songbird::Songbird>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut last_title: Option<String> = None;
+        let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+
+        loop {
+            interval.tick().await;
+
+            let current_title = get_current_playing_title(&manager).await;
+
+            if current_title != last_title {
+                match &current_title {
+                    Some(title) => {
+                        let display_title = if title.chars().count() > 120 {
+                            let truncated: String = title.chars().take(117).collect();
+                            format!("{}...", truncated)
+                        } else {
+                            title.clone()
+                        };
+                        shard.set_activity(Some(serenity::gateway::ActivityData::listening(display_title)));
+                    }
+                    None => {
+                        shard.set_activity(Some(serenity::gateway::ActivityData::listening("~help | /help")));
+                    }
+                }
+                last_title = current_title;
+            }
+        }
+    })
+}
+
 pub async fn record_song_play(pool: &SqlitePool, song_id: i64, current_plays: i32) -> Result<(), sqlx::Error> {
     let now = chrono::Utc::now().timestamp();
     sqlx::query("UPDATE song SET last_played = ?, num_plays = ? WHERE song_id = ?")

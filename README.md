@@ -9,6 +9,7 @@ Maintains 100% backward compatibility with the legacy SQLite `playlists.sql` sch
 ## ⚡ Features
 
 - **Local & Streamed Audio**: Seamlessly plays local library files (`.webm`, `.m4a`, `.opus`, `.mp3`) and live streams YouTube audio directly into voice channels with low latency.
+- **Rich Presence Song Status**: Automatically updates the bot's Discord activity to "Listening to \<Song Title\>" in real-time, showing when tracks are playing or paused and falling back to `~help | /help` when idle.
 - **Dynamic Volume Adjustment**: Real-time volume controls (`~volume <#>`, `~vup`, `~vdown`) that adjust the active track and queue on the fly.
 - **Smart Downloader**: Uses `yt-dlp` to download songs directly into your audio directory, computes SHA-256 fingerprints to prevent duplicates, and registers metadata in SQLite.
 - **Full Playlist Management**: Create, view, edit, and queue custom playlists with a clean subcommand interface (`~playlist`).

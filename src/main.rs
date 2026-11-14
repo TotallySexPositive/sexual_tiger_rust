@@ -79,6 +79,14 @@ impl EventHandler for Handler {
                 eprintln!("Failed to register global slash commands: {:?}", why);
             }
         }
+
+        // Start background Rich Presence updater to display currently playing song
+        let songbird = songbird::get(&ctx)
+            .await
+            .expect("Songbird Voice client placed in at initialisation.")
+            .clone();
+        let shard = ctx.shard.clone();
+        sexual_tiger::start_presence_updater(shard, songbird);
     }
 
     async fn interaction_create(&self, ctx: Context, interaction: Interaction) {
