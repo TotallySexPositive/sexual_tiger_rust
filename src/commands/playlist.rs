@@ -5,9 +5,9 @@ use serenity::framework::standard::{Args, CommandResult};
 use serenity::model::channel::Message;
 use serenity::Result as SerenityResult;
 use sexual_tiger::{
-    add_song_to_playlist, create_playlist, delete_playlist, find_song_by_query,
+    add_song_to_playlist, create_playlist, create_song_track, delete_playlist, find_song_by_query,
     get_playlist_by_name, get_playlist_songs, list_playlists, record_song_play,
-    remove_song_from_playlist, resolve_song_path, DatabasePool,
+    remove_song_from_playlist, resolve_song_path, DatabasePool, SongTrackInfo,
 };
 use songbird::events::{Event, EventContext, EventHandler, TrackEvent};
 
@@ -659,7 +659,12 @@ async fn play_playlist_internal(
         for s in &songs {
             let path = resolve_song_path(&s.source);
             let input: songbird::input::Input = songbird::input::File::new(path).into();
-            let track = handler.enqueue_input(input).await;
+            let track_info = SongTrackInfo {
+                title: s.name.clone(),
+                duration_secs: s.duration.map(|d| d as u64),
+                song_id: s.song_id,
+            };
+            let track = handler.enqueue(create_song_track(input, track_info)).await;
             let _ = track.add_event(Event::Track(TrackEvent::Error), TrackErrorNotifier);
             if s.is_clip.unwrap_or(0) == 1 {
                 let _ = track.set_volume(sexual_tiger::CLIP_VOLUME);

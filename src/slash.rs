@@ -14,10 +14,11 @@ use serenity::model::application::{
 };
 use serenity::model::id::GuildId;
 use sexual_tiger::{
-    add_song_to_playlist, clean_youtube_url, create_playlist, delete_playlist, download_song,
-    find_song_by_query, get_playlist_by_name, get_playlist_songs, insert_song, list_playlists,
-    list_songs, new_song, record_song_play, remove_song_from_playlist, resolve_song_path,
-    search_songs, DatabasePool, CLIP_VOLUME, DEFAULT_BOT_VOLUME, MAX_VOLUME,
+    add_song_to_playlist, clean_youtube_url, create_playlist, create_song_track, delete_playlist,
+    download_song, find_song_by_query, format_now_playing_message, get_playlist_by_name,
+    get_playlist_songs, get_track_user_data, insert_song, list_playlists, list_songs, new_song,
+    record_song_play, remove_song_from_playlist, resolve_song_path, search_songs, DatabasePool,
+    SongTrackInfo, CLIP_VOLUME, DEFAULT_BOT_VOLUME, MAX_VOLUME,
 };
 use songbird::events::{Event, EventContext, EventHandler, TrackEvent};
 
@@ -309,6 +310,8 @@ pub fn create_slash_commands() -> Vec<CreateCommand> {
                 )
                 .required(false),
             ),
+        // /song
+        CreateCommand::new("song").description("Show the currently playing song and playback position"),
         // /xkcd
         CreateCommand::new("xkcd").description("Display a random XKCD comic"),
     ]
@@ -408,6 +411,9 @@ pub async fn handle_slash_command(ctx: &Context, command: &CommandInteraction) {
         "repeat" => {
             let enabled_opt = get_opt_bool(&command.data.options, "enabled");
             handle_repeat(ctx, command, guild_id, enabled_opt).await;
+        }
+        "song" => {
+            handle_song(ctx, command, guild_id).await;
         }
         "shuffle" => {
             let playlist_opt = get_opt_str(&command.data.options, "playlist");
@@ -527,10 +533,15 @@ async fn handle_play(
     if query.starts_with("http://") || query.starts_with("https://") {
         let clean_url = clean_youtube_url(query);
         let input: songbird::input::Input =
-            songbird::input::YoutubeDl::new(reqwest::Client::new(), clean_url).into();
+            songbird::input::YoutubeDl::new(reqwest::Client::new(), clean_url.clone()).into();
 
+        let track_info = SongTrackInfo {
+            title: clean_url,
+            duration_secs: None,
+            song_id: None,
+        };
         let mut handler = handler_lock.lock().await;
-        let track = handler.enqueue_input(input).await;
+        let track = handler.enqueue(create_song_track(input, track_info)).await;
         let _ = track.add_event(Event::Track(TrackEvent::Error), SlashTrackErrorNotifier);
         let _ = track.set_volume(DEFAULT_BOT_VOLUME);
         let q_len = handler.queue().len();
@@ -571,8 +582,13 @@ async fn handle_play(
     let resolved_source = resolve_song_path(&song.source);
     let input: songbird::input::Input = songbird::input::File::new(resolved_source).into();
 
+    let track_info = SongTrackInfo {
+        title: song.name.clone(),
+        duration_secs: song.duration.map(|d| d as u64),
+        song_id: song.song_id,
+    };
     let mut handler = handler_lock.lock().await;
-    let track = handler.enqueue_input(input).await;
+    let track = handler.enqueue(create_song_track(input, track_info)).await;
     let _ = track.add_event(Event::Track(TrackEvent::Error), SlashTrackErrorNotifier);
 
     if song.is_clip.unwrap_or(0) == 1 {
@@ -653,8 +669,13 @@ async fn handle_wii(
     let resolved_source = resolve_song_path(&song.source);
     let input: songbird::input::Input = songbird::input::File::new(resolved_source).into();
 
+    let track_info = SongTrackInfo {
+        title: song.name.clone(),
+        duration_secs: song.duration.map(|d| d as u64),
+        song_id: song.song_id,
+    };
     let mut handler = handler_lock.lock().await;
-    let track = handler.enqueue_input(input).await;
+    let track = handler.enqueue(create_song_track(input, track_info)).await;
     let _ = track.add_event(Event::Track(TrackEvent::Error), SlashTrackErrorNotifier);
 
     if song.is_clip.unwrap_or(0) == 1 {
@@ -1008,6 +1029,51 @@ async fn handle_repeat(
 
     let edit = EditInteractionResponse::new().content(msg);
     let _ = command.edit_response(&ctx.http, edit).await;
+}
+
+async fn handle_song(ctx: &Context, command: &CommandInteraction, guild_id: GuildId) {
+    let manager = songbird::get(ctx).await.unwrap().clone();
+    if let Some(handler_lock) = manager.get(guild_id) {
+        let handler = handler_lock.lock().await;
+        let queue = handler.queue();
+        let current_track = match queue.current() {
+            Some(t) => t,
+            None => {
+                let edit = EditInteractionResponse::new().content("Nothing is currently playing.");
+                let _ = command.edit_response(&ctx.http, edit).await;
+                return;
+            }
+        };
+
+        let info = current_track.get_info().await.ok();
+        let position = info.as_ref().map(|i| i.position).unwrap_or_default();
+        let is_looping = info
+            .as_ref()
+            .map(|i| matches!(i.loops, songbird::tracks::LoopState::Infinite))
+            .unwrap_or(false);
+
+        let user_data = get_track_user_data(&current_track);
+        let title = user_data
+            .as_ref()
+            .map(|d| d.title.as_str())
+            .unwrap_or("Unknown Track");
+        let duration_secs = user_data.as_ref().and_then(|d| d.duration_secs);
+        let song_id = user_data.as_ref().and_then(|d| d.song_id);
+
+        let response = format_now_playing_message(
+            title,
+            song_id,
+            position,
+            duration_secs,
+            is_looping,
+        );
+
+        let edit = EditInteractionResponse::new().content(response);
+        let _ = command.edit_response(&ctx.http, edit).await;
+    } else {
+        let edit = EditInteractionResponse::new().content("Not in a voice channel.");
+        let _ = command.edit_response(&ctx.http, edit).await;
+    }
 }
 
 async fn edit_or_followup_chunked(
@@ -1417,7 +1483,12 @@ async fn play_playlist_slash(
         for s in &songs {
             let path = resolve_song_path(&s.source);
             let input: songbird::input::Input = songbird::input::File::new(path).into();
-            let track = handler.enqueue_input(input).await;
+            let track_info = SongTrackInfo {
+                title: s.name.clone(),
+                duration_secs: s.duration.map(|d| d as u64),
+                song_id: s.song_id,
+            };
+            let track = handler.enqueue(create_song_track(input, track_info)).await;
             let _ = track.add_event(Event::Track(TrackEvent::Error), SlashTrackErrorNotifier);
             if s.is_clip.unwrap_or(0) == 1 {
                 let _ = track.set_volume(CLIP_VOLUME);
@@ -1614,7 +1685,7 @@ mod tests {
     #[test]
     fn test_create_slash_commands() {
         let commands = create_slash_commands();
-        assert_eq!(commands.len(), 26);
+        assert_eq!(commands.len(), 27);
 
         // Check specific command names exist
         let names: Vec<String> = commands
@@ -1640,6 +1711,7 @@ mod tests {
         assert!(names.contains(&"resume".to_string()));
         assert!(names.contains(&"queue".to_string()));
         assert!(names.contains(&"repeat".to_string()));
+        assert!(names.contains(&"song".to_string()));
         assert!(names.contains(&"songs".to_string()));
         assert!(names.contains(&"join".to_string()));
         assert!(names.contains(&"leave".to_string()));

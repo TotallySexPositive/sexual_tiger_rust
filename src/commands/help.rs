@@ -39,6 +39,7 @@ pub fn get_general_help_embed() -> CreateEmbed {
         .field(
             "🎵 Music & Playback",
             "• `play <name | ID# | url>` — Play library song by name/ID, or stream YouTube URL\n\
+             • `song` (or `np`) — Show the currently playing song and playback position\n\
              • `wii` (or `mii`) — Play a random anxiety-inducing Wii/Mii theme\n\
              • `download <url>` — Download audio to local library and database\n\
              • `skip` — Skip to the next song in the queue\n\
@@ -223,6 +224,13 @@ pub fn get_command_help_embed(cmd: &str) -> Result<CreateEmbed, String> {
             "• `~repeat` (toggles repeat on/off)\n• `~repeat on`\n• `~repeat off`\n• `~repeat status`\n• `/repeat [enabled:True|False]`",
             "`loop`",
             "• `~repeat`\n• `~repeat on`\n• `~repeat off`\n• `/repeat enabled:True`",
+        ),
+        "song" | "np" | "nowplaying" | "current" => (
+            "Command: song",
+            "Displays the currently playing song, its database ID (if local), and current playback position against total duration (e.g. 01:30/2:10).",
+            "• `~song`\n• `/song`",
+            "`np`, `nowplaying`, `current`",
+            "• `~song`\n• `~np`\n• `/song`",
         ),
         "join" | "j" => (
             "Command: join",

@@ -502,6 +502,69 @@ pub fn format_songs_pages(title_prefix: &str, songs: &[Song]) -> Vec<String> {
     pages
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct SongTrackInfo {
+    pub title: String,
+    pub duration_secs: Option<u64>,
+    pub song_id: Option<i64>,
+}
+
+pub fn create_song_track(input: songbird::input::Input, info: SongTrackInfo) -> songbird::tracks::Track {
+    songbird::tracks::Track::new_with_data(input, std::sync::Arc::new(info))
+}
+
+pub fn get_track_user_data(track: &songbird::tracks::TrackHandle) -> Option<std::sync::Arc<SongTrackInfo>> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        track.data::<SongTrackInfo>()
+    }))
+    .ok()
+}
+
+pub fn format_playback_progress(pos: std::time::Duration, duration_secs: Option<u64>) -> String {
+    let pos_total = pos.as_secs();
+    let (pos_str, dur_str) = match duration_secs {
+        Some(total) => {
+            let has_hours = total >= 3600 || pos_total >= 3600;
+            let p_str = if has_hours {
+                format!("{}:{:02}:{:02}", pos_total / 3600, (pos_total % 3600) / 60, pos_total % 60)
+            } else {
+                format!("{:02}:{:02}", pos_total / 60, pos_total % 60)
+            };
+            let d_str = if has_hours {
+                format!("{}:{:02}:{:02}", total / 3600, (total % 3600) / 60, total % 60)
+            } else {
+                format!("{}:{:02}", total / 60, total % 60)
+            };
+            (p_str, d_str)
+        }
+        None => {
+            let p_str = if pos_total >= 3600 {
+                format!("{}:{:02}:{:02}", pos_total / 3600, (pos_total % 3600) / 60, pos_total % 60)
+            } else {
+                format!("{:02}:{:02}", pos_total / 60, pos_total % 60)
+            };
+            (p_str, "??:??".to_string())
+        }
+    };
+    format!("{}/{}", pos_str, dur_str)
+}
+
+pub fn format_now_playing_message(
+    title: &str,
+    song_id: Option<i64>,
+    position: std::time::Duration,
+    duration_secs: Option<u64>,
+    is_looping: bool,
+) -> String {
+    let progress = format_playback_progress(position, duration_secs);
+    let id_str = match song_id {
+        Some(id) => format!(" (ID: {})", id),
+        None => String::new(),
+    };
+    let loop_tag = if is_looping { " 🔁" } else { "" };
+    format!("🎶 Now playing: **{title}**{id_str} [{progress}]{loop_tag}")
+}
+
 pub async fn record_song_play(pool: &SqlitePool, song_id: i64, current_plays: i32) -> Result<(), sqlx::Error> {
     let now = chrono::Utc::now().timestamp();
     sqlx::query("UPDATE song SET last_played = ?, num_plays = ? WHERE song_id = ?")
@@ -1018,5 +1081,50 @@ mod tests {
         assert!(pages[0].contains("   ID | Songs | Created By       | Name"));
         assert!(pages[0].contains("    1 |     5 | Papa             | Kimi no Na wa"));
         assert!(pages[0].contains("    2 |    20 | Steven           | LPO - Greatest Video Game Music"));
+    }
+
+    #[test]
+    fn test_format_playback_progress() {
+        assert_eq!(
+            format_playback_progress(std::time::Duration::from_secs(90), Some(130)),
+            "01:30/2:10"
+        );
+        assert_eq!(
+            format_playback_progress(std::time::Duration::from_secs(5), Some(65)),
+            "00:05/1:05"
+        );
+        assert_eq!(
+            format_playback_progress(std::time::Duration::from_secs(90), None),
+            "01:30/??:??"
+        );
+        assert_eq!(
+            format_playback_progress(std::time::Duration::from_secs(3665), Some(7200)),
+            "1:01:05/2:00:00"
+        );
+        assert_eq!(
+            format_playback_progress(std::time::Duration::from_secs(0), Some(0)),
+            "00:00/0:00"
+        );
+    }
+
+    #[test]
+    fn test_format_now_playing_message() {
+        let msg1 = format_now_playing_message(
+            "Test Song",
+            Some(42),
+            std::time::Duration::from_secs(90),
+            Some(130),
+            false,
+        );
+        assert_eq!(msg1, "🎶 Now playing: **Test Song** (ID: 42) [01:30/2:10]");
+
+        let msg2 = format_now_playing_message(
+            "Stream URL",
+            None,
+            std::time::Duration::from_secs(90),
+            None,
+            true,
+        );
+        assert_eq!(msg2, "🎶 Now playing: **Stream URL** [01:30/??:??] 🔁");
     }
 }

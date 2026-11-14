@@ -5,7 +5,8 @@ use serenity::framework::standard::{Args, CommandResult};
 use serenity::model::channel::Message;
 use serenity::Result as SerenityResult;
 use sexual_tiger::{
-    find_song_by_query, list_songs, record_song_play, search_songs, DatabasePool,
+    create_song_track, find_song_by_query, format_now_playing_message, get_track_user_data,
+    list_songs, record_song_play, search_songs, DatabasePool, SongTrackInfo,
 };
 use songbird::events::{Event, EventContext, EventHandler, TrackEvent};
 
@@ -104,9 +105,14 @@ pub async fn play(ctx: &Context, msg: &Message, args: Args) -> CommandResult {
 
         let clean_url = sexual_tiger::clean_youtube_url(&in_query);
         let input: songbird::input::Input =
-            songbird::input::YoutubeDl::new(reqwest::Client::new(), clean_url).into();
+            songbird::input::YoutubeDl::new(reqwest::Client::new(), clean_url.clone()).into();
 
-        let track = handler.enqueue_input(input).await;
+        let track_info = SongTrackInfo {
+            title: clean_url,
+            duration_secs: None,
+            song_id: None,
+        };
+        let track = handler.enqueue(create_song_track(input, track_info)).await;
         let _ = track.add_event(Event::Track(TrackEvent::Error), TrackErrorNotifier);
         let _ = track.set_volume(sexual_tiger::DEFAULT_BOT_VOLUME);
         let q_len = handler.queue().len();
@@ -401,6 +407,68 @@ pub async fn repeat(ctx: &Context, msg: &Message, mut args: Args) -> CommandResu
                 );
             }
         }
+    } else {
+        check_msg(msg.reply(&ctx.http, "Not in a voice channel").await);
+    }
+
+    Ok(())
+}
+
+#[command]
+#[aliases("np", "nowplaying", "current")]
+pub async fn song(ctx: &Context, msg: &Message) -> CommandResult {
+    let guild_id = match msg.guild_id {
+        Some(id) => id,
+        None => {
+            check_msg(msg.reply(&ctx.http, "Must be in a server").await);
+            return Ok(());
+        }
+    };
+
+    let manager = songbird::get(ctx)
+        .await
+        .expect("Songbird Voice client placed in at initialisation.")
+        .clone();
+
+    if let Some(handler_lock) = manager.get(guild_id) {
+        let handler = handler_lock.lock().await;
+        let queue = handler.queue();
+        let current_track = match queue.current() {
+            Some(t) => t,
+            None => {
+                check_msg(
+                    msg.channel_id
+                        .say(&ctx.http, "Nothing is currently playing.")
+                        .await,
+                );
+                return Ok(());
+            }
+        };
+
+        let info = current_track.get_info().await.ok();
+        let position = info.as_ref().map(|i| i.position).unwrap_or_default();
+        let is_looping = info
+            .as_ref()
+            .map(|i| matches!(i.loops, songbird::tracks::LoopState::Infinite))
+            .unwrap_or(false);
+
+        let user_data = get_track_user_data(&current_track);
+        let title = user_data
+            .as_ref()
+            .map(|d| d.title.as_str())
+            .unwrap_or("Unknown Track");
+        let duration_secs = user_data.as_ref().and_then(|d| d.duration_secs);
+        let song_id = user_data.as_ref().and_then(|d| d.song_id);
+
+        let response = format_now_playing_message(
+            title,
+            song_id,
+            position,
+            duration_secs,
+            is_looping,
+        );
+
+        check_msg(msg.channel_id.say(&ctx.http, response).await);
     } else {
         check_msg(msg.reply(&ctx.http, "Not in a voice channel").await);
     }
@@ -743,7 +811,12 @@ pub async fn play_song_struct_internal(
     {
         let mut handler = handler_lock.lock().await;
 
-        let track = handler.enqueue_input(input).await;
+        let track_info = SongTrackInfo {
+            title: the_song.name.clone(),
+            duration_secs: the_song.duration.map(|d| d as u64),
+            song_id: the_song.song_id,
+        };
+        let track = handler.enqueue(create_song_track(input, track_info)).await;
         let _ = track.add_event(Event::Track(TrackEvent::Error), TrackErrorNotifier);
         if the_song.is_clip.unwrap_or(0) == 1 {
             let _ = track.set_volume(sexual_tiger::CLIP_VOLUME);
